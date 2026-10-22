@@ -1,0 +1,37 @@
+[package]
+name = "everty-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Small cross-platform desktop UI foundation for Everty products"
+
+[lib]
+name = "everty_ui"
+path = "src/lib.rs"
+
+[dependencies]
+cosmic-text = "0.19.0"
+resvg = { version = "0.45.1", default-features = false }
+unicode-segmentation = "1"
+winit = "0.30"
+
+[[bench]]
+name = "layout_10k"
+harness = false
+
+[[bench]]
+name = "text_pipeline"
+harness = false
+
+[[bench]]
+name = "gallery_text_matrix"
+harness = false
+
+[[bench]]
+name = "virtual_list_100k"
+harness = false
+
+[[bench]]
+name = "raster_scene"
+harness = false

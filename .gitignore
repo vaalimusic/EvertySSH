@@ -1,0 +1,23 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Local logs and crashes
+*.log
+crash.log
+
+# Databases & local user configs
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+hosts.toml
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
