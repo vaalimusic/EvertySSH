@@ -663,12 +663,17 @@ impl EvertySshApp {
                     self.request_redraw();
                 }
             }
-            HoverTarget::TerminalReconnect => {
-                self.state.reconnect_active_tab();
+            HoverTarget::TerminalReconnect(tab_idx) => {
+                self.state.reconnect_tab(tab_idx);
                 self.request_redraw();
             }
-            HoverTarget::TerminalCloseTab => {
-                self.state.close_active_tab();
+            HoverTarget::TerminalCloseTab(tab_idx) => {
+                if self.state.split_tab == Some(tab_idx) {
+                    self.state.close_split_view();
+                } else {
+                    self.state.active_tab = tab_idx;
+                    self.state.close_active_tab();
+                }
                 self.request_redraw();
             }
             HoverTarget::QuickAction(cmd) => {
@@ -713,10 +718,13 @@ impl EvertySshApp {
             }
             HoverTarget::SplitTerminalArea => {
                 if let Some(s_tab) = self.state.split_tab {
+                    let old_active = self.state.active_tab;
                     self.state.active_tab = s_tab;
+                    self.state.split_tab = Some(old_active);
                     self.request_redraw();
                 }
             }
+            HoverTarget::TerminalStatusBanner(_) => {}
             HoverTarget::ModalDialogBody => {
                 // Click within modal card background or text labels - do not close modal
             }

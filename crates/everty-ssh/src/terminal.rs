@@ -81,33 +81,131 @@ impl TerminalScreen {
         if cols == 0 || rows == 0 {
             return;
         }
+        let _old_cols = self.cols;
+        let old_rows = self.rows;
         self.cols = cols;
         self.rows = rows;
 
-        let mut new_screen = vec![vec![Cell::default(); cols]; rows];
-        for (y, row) in self.screen.iter().enumerate() {
-            if y < rows {
-                for (x, &cell) in row.iter().enumerate() {
-                    if x < cols {
-                        new_screen[y][x] = cell;
+        // Resize column width for all rows in primary screen
+        for row in &mut self.screen {
+            row.resize(
+                cols,
+                Cell {
+                    ch: ' ',
+                    fg: self.default_fg,
+                    bg: self.default_bg,
+                    bold: false,
+                    underline: false,
+                },
+            );
+        }
+
+        // Also resize column width for scrollback rows
+        for row in &mut self.scrollback {
+            row.resize(
+                cols,
+                Cell {
+                    ch: ' ',
+                    fg: self.default_fg,
+                    bg: self.default_bg,
+                    bold: false,
+                    underline: false,
+                },
+            );
+        }
+
+        if self.alt_screen.is_none() {
+            if rows < old_rows {
+                // Height decreased (window compressed vertically).
+                // Ensure active output and prompt at the bottom stay in view by shifting
+                // top lines into scrollback instead of discarding bottom lines.
+                let last_used = self
+                    .screen
+                    .iter()
+                    .rposition(|row| row.iter().any(|c| c.ch != ' ' || c.bg != self.default_bg))
+                    .unwrap_or(0);
+                let bottom_active = last_used.max(self.cursor_y);
+                if bottom_active >= rows {
+                    let overflow = (bottom_active + 1 - rows).min(self.screen.len());
+                    for _ in 0..overflow {
+                        let top_row = self.screen.remove(0);
+                        if self.scrollback.len() >= self.max_scrollback {
+                            self.scrollback.pop_front();
+                        }
+                        self.scrollback.push_back(top_row);
+                    }
+                    self.cursor_y = self.cursor_y.saturating_sub(overflow);
+                }
+            } else if rows > old_rows && self.scroll_offset == 0 {
+                // Height increased (window expanded vertically).
+                // Pull lines from scrollback to top of screen so the prompt stays anchored at bottom.
+                let diff = rows - old_rows;
+                let pull_count = diff.min(self.scrollback.len());
+                for _ in 0..pull_count {
+                    if let Some(mut row) = self.scrollback.pop_back() {
+                        row.resize(
+                            cols,
+                            Cell {
+                                ch: ' ',
+                                fg: self.default_fg,
+                                bg: self.default_bg,
+                                bold: false,
+                                underline: false,
+                            },
+                        );
+                        self.screen.insert(0, row);
                     }
                 }
+                self.cursor_y = (self.cursor_y + pull_count).min(rows.saturating_sub(1));
             }
         }
-        self.screen = new_screen;
 
+        // Ensure primary screen has exactly `rows` rows
+        while self.screen.len() < rows {
+            self.screen.push(vec![
+                Cell {
+                    ch: ' ',
+                    fg: self.default_fg,
+                    bg: self.default_bg,
+                    bold: false,
+                    underline: false,
+                };
+                cols
+            ]);
+        }
+        if self.screen.len() > rows {
+            self.screen.truncate(rows);
+        }
+
+        // Handle alternate screen buffer if active (e.g. htop, nano, mc)
         if let Some(ref mut alt) = self.alt_screen {
-            let mut new_alt = vec![vec![Cell::default(); cols]; rows];
-            for (y, row) in alt.iter().enumerate() {
-                if y < rows {
-                    for (x, &cell) in row.iter().enumerate() {
-                        if x < cols {
-                            new_alt[y][x] = cell;
-                        }
-                    }
-                }
+            for row in alt.iter_mut() {
+                row.resize(
+                    cols,
+                    Cell {
+                        ch: ' ',
+                        fg: self.default_fg,
+                        bg: self.default_bg,
+                        bold: false,
+                        underline: false,
+                    },
+                );
             }
-            *alt = new_alt;
+            while alt.len() < rows {
+                alt.push(vec![
+                    Cell {
+                        ch: ' ',
+                        fg: self.default_fg,
+                        bg: self.default_bg,
+                        bold: false,
+                        underline: false,
+                    };
+                    cols
+                ]);
+            }
+            if alt.len() > rows {
+                alt.truncate(rows);
+            }
         }
 
         if self.cursor_x >= cols {
@@ -116,6 +214,7 @@ impl TerminalScreen {
         if self.cursor_y >= rows {
             self.cursor_y = rows.saturating_sub(1);
         }
+        self.scroll_offset = self.scroll_offset.min(self.scrollback.len());
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -694,5 +793,60 @@ mod tests {
         let s: String = row.iter().map(|c| c.ch).collect();
         println!("Terminal row 0: {:?}", s.trim_end());
         assert!(s.contains("root@rigid-purple"));
+    }
+
+    #[test]
+    fn test_terminal_resize_shrink_keeps_prompt_visible() {
+        let mut term = Terminal::new(80, 10, 100);
+        // Fill 10 rows with commands and output, ending with a prompt
+        for i in 0..9 {
+            term.write_bytes(format!("line {}\r\n", i).as_bytes());
+        }
+        term.write_bytes(b"vaali@viewracebeta:~$ ");
+
+        // Prompt is at row 9 (bottom row of 10 rows)
+        let (cx, cy) = term.cursor_pos();
+        assert_eq!(cy, 9);
+        assert_eq!(cx, 22);
+
+        let row9: String = term.get_row(9).unwrap().iter().map(|c| c.ch).collect();
+        assert!(row9.starts_with("vaali@viewracebeta:~$ "));
+
+        // Shrink height from 10 to 5 rows
+        term.resize(80, 5);
+
+        // Prompt MUST still be visible at the bottom (row 4)
+        assert_eq!(term.rows(), 5);
+        let (_, new_cy) = term.cursor_pos();
+        assert_eq!(new_cy, 4);
+
+        let new_row4: String = term.get_row(4).unwrap().iter().map(|c| c.ch).collect();
+        assert!(new_row4.starts_with("vaali@viewracebeta:~$ "));
+
+        // Previous rows must have moved to scrollback
+        assert!(term.scrollback_len() >= 5);
+    }
+
+    #[test]
+    fn test_terminal_resize_expand_pulls_from_scrollback() {
+        let mut term = Terminal::new(80, 5, 100);
+        for i in 0..10 {
+            term.write_bytes(format!("output {}\r\n", i).as_bytes());
+        }
+        term.write_bytes(b"user@host:~$ ");
+
+        // Prompt is at bottom row 4
+        let (_, cy) = term.cursor_pos();
+        assert_eq!(cy, 4);
+
+        // Expand height from 5 to 8 rows
+        term.resize(80, 8);
+        assert_eq!(term.rows(), 8);
+
+        // Prompt stays at bottom row (row 7) because 3 rows were pulled from scrollback
+        let (_, new_cy) = term.cursor_pos();
+        assert_eq!(new_cy, 7);
+        let bottom_row: String = term.get_row(7).unwrap().iter().map(|c| c.ch).collect();
+        assert!(bottom_row.starts_with("user@host:~$ "));
     }
 }

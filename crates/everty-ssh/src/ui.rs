@@ -348,6 +348,7 @@ impl UiRenderer {
         &mut self,
         builder: &mut PaintBuilder,
         app: &AppState,
+        tab_idx: usize,
         tab: &SessionTab,
         is_active_panel: bool,
         term_rect: LogicalRect,
@@ -470,11 +471,12 @@ impl UiRenderer {
         let pad_x = term_x + 10.0;
         let pad_y = content_y + 6.0;
 
-        let max_visible_rows = ((content_h - 12.0) / line_h).max(1.0) as usize;
+        let max_visible_rows = ((content_h - 12.0) / line_h).floor().max(1.0) as usize;
+        let rows_to_render = tab.terminal.rows().min(max_visible_rows);
         let total_sb = tab.terminal.scrollback_len();
         let scroll_offset = tab.terminal.scroll_offset();
 
-        for visual_y in 0..max_visible_rows {
+        for visual_y in 0..rows_to_render {
             if let Some(row_cells) = tab.terminal.get_row(visual_y) {
                 let row_has_selection = if is_active_panel {
                     app.selection.as_ref().map_or(false, |sel| {
@@ -591,7 +593,12 @@ impl UiRenderer {
 
         // Draw Cursor (blinking vertical bar)
         let (cur_x, cur_y) = tab.terminal.cursor_pos();
-        if is_active_panel && tab.terminal.screen.cursor_visible && app.caret_visible && cur_y < max_visible_rows {
+        if is_active_panel
+            && tab.terminal.screen.cursor_visible
+            && app.caret_visible
+            && scroll_offset == 0
+            && cur_y < rows_to_render
+        {
             let cursor_x = pad_x + (cur_x as f64) * char_w;
             let cursor_y = pad_y + (cur_y as f64) * line_h;
             let cursor_rect = LogicalRect::from_xywh(
@@ -611,30 +618,11 @@ impl UiRenderer {
             builder.fill_rect(banner_rect, Color::rgba(18, 29, 52, 240), 6.0);
             builder.stroke_rect(banner_rect, border_color, 1.2, 6.0);
 
-            // Icon + Status
-            builder.icon(
-                if is_error { ICON_ALERT_ID } else { ICON_REFRESH_ID },
-                LogicalRect::from_xywh(term_x + 20.0, term_y + term_h - 34.0, 18.0, 18.0),
-                if is_error { Color::rgba(248, 113, 113, 240) } else { accent_mint },
-            );
-            let status_txt = self.shape_cached(&tab.status, StyleId::SansBold, None);
-            builder.text(LogicalPoint::new(term_x + 44.0, term_y + term_h - 33.0), status_txt, text_main);
-
-            // Buttons
-            let is_recon_hover = app.hover == HoverTarget::TerminalReconnect;
-            let recon_rect = LogicalRect::from_xywh(term_x + term_w - 360.0, term_y + term_h - 39.0, 230.0, 28.0);
-            let recon_bg = if is_recon_hover {
-                Color::rgba(52, 211, 153, 255)
-            } else {
-                accent_mint
-            };
-            builder.fill_rect(recon_rect, recon_bg, 5.0);
-            builder.icon(ICON_REFRESH_ID, LogicalRect::from_xywh(term_x + term_w - 350.0, term_y + term_h - 33.0, 16.0, 16.0), Color::rgba(8, 13, 25, 255));
-            let recon_lbl = self.shape_cached("Переподключиться к серверу", StyleId::SansBold, None);
-            builder.text(LogicalPoint::new(term_x + term_w - 328.0, term_y + term_h - 34.0), recon_lbl, Color::rgba(8, 13, 25, 255));
-
-            let is_close_hover = app.hover == HoverTarget::TerminalCloseTab;
-            let close_rect = LogicalRect::from_xywh(term_x + term_w - 118.0, term_y + term_h - 39.0, 98.0, 28.0);
+            // Close button (positioned right-aligned)
+            let is_close_hover = app.hover == HoverTarget::TerminalCloseTab(tab_idx);
+            let close_btn_w = if term_w >= 480.0 { 92.0 } else { 32.0 };
+            let close_x = term_x + term_w - 12.0 - close_btn_w;
+            let close_rect = LogicalRect::from_xywh(close_x, term_y + term_h - 39.0, close_btn_w, 28.0);
             let close_bg = if is_close_hover {
                 Color::rgba(40, 58, 92, 240)
             } else {
@@ -642,9 +630,53 @@ impl UiRenderer {
             };
             builder.fill_rect(close_rect, close_bg, 5.0);
             builder.stroke_rect(close_rect, card_border, 1.0, 5.0);
-            builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(term_x + term_w - 110.0, term_y + term_h - 32.0, 14.0, 14.0), text_muted);
-            let close_lbl = self.shape_cached("Закрыть", StyleId::Sans, None);
-            builder.text(LogicalPoint::new(term_x + term_w - 92.0, term_y + term_h - 34.0), close_lbl, text_main);
+            if term_w >= 480.0 {
+                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(close_x + 8.0, term_y + term_h - 32.0, 14.0, 14.0), text_muted);
+                let close_lbl = self.shape_cached("Закрыть", StyleId::Sans, None);
+                builder.text(LogicalPoint::new(close_x + 26.0, term_y + term_h - 34.0), close_lbl, text_main);
+            } else {
+                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(close_x + 9.0, term_y + term_h - 32.0, 14.0, 14.0), text_main);
+            }
+
+            // Reconnect button (positioned to the left of Close button)
+            let is_recon_hover = app.hover == HoverTarget::TerminalReconnect(tab_idx);
+            let (recon_btn_w, recon_label) = if term_w >= 540.0 {
+                (180.0, Some("Переподключиться"))
+            } else if term_w >= 360.0 {
+                (105.0, Some("Повторить"))
+            } else {
+                (32.0, None)
+            };
+            let recon_x = close_x - 6.0 - recon_btn_w;
+            let recon_rect = LogicalRect::from_xywh(recon_x, term_y + term_h - 39.0, recon_btn_w, 28.0);
+            let recon_bg = if is_recon_hover {
+                Color::rgba(52, 211, 153, 255)
+            } else {
+                accent_mint
+            };
+            builder.fill_rect(recon_rect, recon_bg, 5.0);
+            if let Some(lbl_text) = recon_label {
+                builder.icon(ICON_REFRESH_ID, LogicalRect::from_xywh(recon_x + 8.0, term_y + term_h - 33.0, 16.0, 16.0), Color::rgba(8, 13, 25, 255));
+                let recon_lbl = self.shape_cached(lbl_text, StyleId::SansBold, None);
+                builder.text(LogicalPoint::new(recon_x + 28.0, term_y + term_h - 34.0), recon_lbl, Color::rgba(8, 13, 25, 255));
+            } else {
+                builder.icon(ICON_REFRESH_ID, LogicalRect::from_xywh(recon_x + 8.0, term_y + term_h - 33.0, 16.0, 16.0), Color::rgba(8, 13, 25, 255));
+            }
+
+            // Clean up leading emoji icons if present (since alert/refresh vector icon is already displayed)
+            let clean_status = tab
+                .status
+                .trim_start_matches(|c: char| c == '🔴' || c == '🟢' || c == '⚪' || c == '🟡' || c == ' ');
+
+            // Icon + Status (strictly single-line clamped to prevent wrapping and vertical spillover)
+            builder.icon(
+                if is_error { ICON_ALERT_ID } else { ICON_REFRESH_ID },
+                LogicalRect::from_xywh(term_x + 18.0, term_y + term_h - 34.0, 18.0, 18.0),
+                if is_error { Color::rgba(248, 113, 113, 240) } else { accent_mint },
+            );
+            let max_status_w = (recon_x - (term_x + 42.0) - 8.0).max(20.0);
+            let status_txt = self.shape_clamped_cached(clean_status, StyleId::SansBold, LogicalPx(max_status_w), 1);
+            builder.text(LogicalPoint::new(term_x + 42.0, term_y + term_h - 33.0), status_txt, text_main);
         }
 
         // 4. Scrollbar
@@ -653,7 +685,7 @@ impl UiRenderer {
         let sb_y = content_y + 4.0;
         let sb_h = (content_h - 8.0).max(20.0);
 
-        let rows = app.terminal_rows;
+        let rows = tab.terminal.rows();
         let track_rect = LogicalRect::from_xywh(sb_x, sb_y, sb_w, sb_h);
         builder.fill_rect(track_rect, Color::rgba(14, 22, 38, 120), 3.0);
 
@@ -953,90 +985,6 @@ impl UiRenderer {
         builder.text(LogicalPoint::new(brand_x, 11.0), logo_ssh, accent_mint);
         brand_x += 42.0;
 
-        // Tabs
-        let mut tab_x = brand_x.max(160.0);
-        for (i, tab) in app.tabs.iter().enumerate() {
-            let is_active = i == app.active_tab;
-            let is_hovered = app.hover == HoverTarget::HeaderTab(i);
-            let is_close_hovered = app.hover == HoverTarget::HeaderTabClose(i);
-
-            let tab_w = 175.0;
-            let tab_rect = LogicalRect::from_xywh(tab_x, 7.0, tab_w, 30.0);
-
-            let tab_bg = if is_active {
-                active_tab_bg
-            } else if is_hovered {
-                Color::rgba(20, 32, 58, 255)
-            } else {
-                Color::rgba(16, 25, 46, 255)
-            };
-            builder.fill_rect(tab_rect, tab_bg, 5.0);
-            if is_active {
-                builder.stroke_rect(tab_rect, accent_mint, 1.2, 5.0);
-            } else if is_hovered {
-                builder.stroke_rect(tab_rect, Color::rgba(45, 212, 191, 140), 1.0, 5.0);
-            } else {
-                builder.stroke_rect(tab_rect, card_border, 1.0, 5.0);
-            }
-
-            let dot_color = if tab.status.contains("Connected") {
-                accent_emerald
-            } else if tab.status.contains("Connecting") {
-                Color::rgba(251, 191, 36, 255)
-            } else {
-                Color::rgba(148, 163, 184, 255)
-            };
-            builder.fill_rect(
-                LogicalRect::from_xywh(tab_x + 10.0, 18.0, 8.0, 8.0),
-                dot_color,
-                4.0,
-            );
-
-            let max_title_chars = 14;
-            let display_title = if tab.title.chars().count() > max_title_chars {
-                let truncated: String = tab.title.chars().take(max_title_chars).collect();
-                format!("{truncated}…")
-            } else {
-                tab.title.clone()
-            };
-            let title_layout = self.shape_cached(&display_title, StyleId::Sans, Some(LogicalPx(110.0)));
-            builder.text(
-                LogicalPoint::new(tab_x + 24.0, 13.0),
-                title_layout,
-                if is_active { text_main } else { text_dim },
-            );
-
-            // Tab Close '×' with vector icon & hover badge
-            let close_rect = LogicalRect::from_xywh(tab_x + tab_w - 24.0, 12.0, 18.0, 18.0);
-            if is_close_hovered {
-                builder.fill_rect(close_rect, Color::rgba(239, 68, 68, 200), 4.0);
-                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(tab_x + tab_w - 21.0, 15.0, 12.0, 12.0), Color::rgba(255, 255, 255, 255));
-            } else {
-                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(tab_x + tab_w - 21.0, 15.0, 12.0, 12.0), text_muted);
-            }
-
-            tab_x += tab_w + 6.0;
-        }
-
-        // "+ Добавить сервер" Button in Header (with Hover)
-        let is_add_hovered = app.hover == HoverTarget::HeaderAddBtn;
-        let add_btn_w = 125.0;
-        let add_btn_rect = LogicalRect::from_xywh(tab_x, 7.0, add_btn_w, 30.0);
-        let add_label_text = tr(lang, "Добавить", "Add Server");
-
-        if is_add_hovered {
-            builder.fill_rect(add_btn_rect, accent_mint, 5.0);
-            builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 12.0, 15.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-            let add_label = self.shape_cached(add_label_text, StyleId::SansBold, None);
-            builder.text(LogicalPoint::new(tab_x + 32.0, 13.0), add_label, Color::rgba(9, 14, 26, 255));
-        } else {
-            builder.fill_rect(add_btn_rect, Color::rgba(20, 36, 60, 255), 5.0);
-            builder.stroke_rect(add_btn_rect, accent_mint, 1.0, 5.0);
-            builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 12.0, 15.0, 14.0, 14.0), accent_mint);
-            let add_label = self.shape_cached(add_label_text, StyleId::SansBold, None);
-            builder.text(LogicalPoint::new(tab_x + 32.0, 13.0), add_label, accent_mint);
-        }
-
         // Settings Gear Button on far right header (with Hover)
         let is_settings_hovered = app.hover == HoverTarget::HeaderSettingsBtn;
         let settings_btn_rect = LogicalRect::from_xywh(w - 46.0, 7.0, 32.0, 30.0);
@@ -1081,11 +1029,12 @@ impl UiRenderer {
             if is_lang_hovered { accent_mint } else { text_main },
         );
 
-        // Search Button on right header (with Hover)
-        let is_search_hovered = app.hover == HoverTarget::HeaderSearchBtn;
-        let search_btn_w = 160.0;
-        let search_btn_x = lang_btn_x - search_btn_w - 6.0;
+        // Search Button on right header
+        let compact_search = w < 880.0 || (app.tabs.len() >= 3 && w < 1050.0);
+        let search_btn_w = if compact_search { 32.0 } else { 150.0 };
+        let search_btn_x = w - 100.0 - search_btn_w;
         let search_btn_rect = LogicalRect::from_xywh(search_btn_x, 7.0, search_btn_w, 30.0);
+        let is_search_hovered = app.hover == HoverTarget::HeaderSearchBtn;
 
         builder.fill_rect(
             search_btn_rect,
@@ -1098,14 +1047,117 @@ impl UiRenderer {
             1.0,
             5.0,
         );
-        builder.icon(
-            ICON_SEARCH_ID,
-            LogicalRect::from_xywh(search_btn_x + 12.0, 15.0, 14.0, 14.0),
-            if is_search_hovered { accent_mint } else { text_dim },
-        );
-        let search_hint_text = tr(lang, "Ctrl+R Команды", "Ctrl+R Commands");
-        let search_hint = self.shape_cached(search_hint_text, StyleId::Small, None);
-        builder.text(LogicalPoint::new(search_btn_x + 32.0, 14.0), search_hint, if is_search_hovered { text_main } else { text_dim });
+        if compact_search {
+            builder.icon(
+                ICON_SEARCH_ID,
+                LogicalRect::from_xywh(search_btn_x + 9.0, 15.0, 14.0, 14.0),
+                if is_search_hovered { accent_mint } else { text_dim },
+            );
+        } else {
+            builder.icon(
+                ICON_SEARCH_ID,
+                LogicalRect::from_xywh(search_btn_x + 12.0, 15.0, 14.0, 14.0),
+                if is_search_hovered { accent_mint } else { text_dim },
+            );
+            let search_hint_text = tr(lang, "Ctrl+R Команды", "Ctrl+R Commands");
+            let search_hint = self.shape_cached(search_hint_text, StyleId::Small, None);
+            builder.text(LogicalPoint::new(search_btn_x + 32.0, 14.0), search_hint, if is_search_hovered { text_main } else { text_dim });
+        }
+
+        // Tabs
+        let tab_start_x = brand_x.max(150.0);
+        let compact_add = w < 720.0 || (app.tabs.len() >= 3 && w < 920.0);
+        let add_btn_w = if compact_add { 32.0 } else { 110.0 };
+        let max_tabs_w = (search_btn_x - 10.0 - tab_start_x - add_btn_w - 6.0).max(60.0);
+        let num_tabs = app.tabs.len().max(1);
+        let tab_w = ((max_tabs_w - (num_tabs - 1) as f64 * 6.0) / num_tabs as f64).clamp(60.0, 175.0);
+
+        let mut tab_x = tab_start_x;
+        for (i, tab) in app.tabs.iter().enumerate() {
+            if tab_x + tab_w > search_btn_x - 4.0 {
+                break;
+            }
+            let is_active = i == app.active_tab;
+            let is_hovered = app.hover == HoverTarget::HeaderTab(i);
+            let is_close_hovered = app.hover == HoverTarget::HeaderTabClose(i);
+
+            let tab_rect = LogicalRect::from_xywh(tab_x, 7.0, tab_w, 30.0);
+
+            let tab_bg = if is_active {
+                active_tab_bg
+            } else if is_hovered {
+                Color::rgba(20, 32, 58, 255)
+            } else {
+                Color::rgba(16, 25, 46, 255)
+            };
+            builder.fill_rect(tab_rect, tab_bg, 5.0);
+            if is_active {
+                builder.stroke_rect(tab_rect, accent_mint, 1.2, 5.0);
+            } else if is_hovered {
+                builder.stroke_rect(tab_rect, Color::rgba(45, 212, 191, 140), 1.0, 5.0);
+            } else {
+                builder.stroke_rect(tab_rect, card_border, 1.0, 5.0);
+            }
+
+            let dot_color = if tab.status.contains("Connected") {
+                accent_emerald
+            } else if tab.status.contains("Connecting") {
+                Color::rgba(251, 191, 36, 255)
+            } else {
+                Color::rgba(148, 163, 184, 255)
+            };
+            builder.fill_rect(
+                LogicalRect::from_xywh(tab_x + 10.0, 18.0, 8.0, 8.0),
+                dot_color,
+                4.0,
+            );
+
+            let max_title_w = (tab_w - 48.0).max(10.0);
+            let title_layout = self.shape_cached(&tab.title, StyleId::Sans, Some(LogicalPx(max_title_w)));
+            builder.text(
+                LogicalPoint::new(tab_x + 24.0, 13.0),
+                title_layout,
+                if is_active { text_main } else { text_dim },
+            );
+
+            // Tab Close '×' with vector icon & hover badge
+            let close_rect = LogicalRect::from_xywh(tab_x + tab_w - 24.0, 12.0, 18.0, 18.0);
+            if is_close_hovered {
+                builder.fill_rect(close_rect, Color::rgba(239, 68, 68, 200), 4.0);
+                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(tab_x + tab_w - 21.0, 15.0, 12.0, 12.0), Color::rgba(255, 255, 255, 255));
+            } else {
+                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(tab_x + tab_w - 21.0, 15.0, 12.0, 12.0), text_muted);
+            }
+
+            tab_x += tab_w + 6.0;
+        }
+
+        // "+ Добавить сервер" Button in Header (with Hover)
+        if tab_x + add_btn_w <= search_btn_x - 4.0 {
+            let is_add_hovered = app.hover == HoverTarget::HeaderAddBtn;
+            let add_btn_rect = LogicalRect::from_xywh(tab_x, 7.0, add_btn_w, 30.0);
+
+            if is_add_hovered {
+                builder.fill_rect(add_btn_rect, accent_mint, 5.0);
+                if compact_add {
+                    builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 9.0, 15.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
+                } else {
+                    builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 10.0, 15.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
+                    let add_label = self.shape_cached(tr(lang, "Добавить", "Add"), StyleId::SansBold, None);
+                    builder.text(LogicalPoint::new(tab_x + 28.0, 13.0), add_label, Color::rgba(9, 14, 26, 255));
+                }
+            } else {
+                builder.fill_rect(add_btn_rect, Color::rgba(20, 36, 60, 255), 5.0);
+                builder.stroke_rect(add_btn_rect, accent_mint, 1.0, 5.0);
+                if compact_add {
+                    builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 9.0, 15.0, 14.0, 14.0), accent_mint);
+                } else {
+                    builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 10.0, 15.0, 14.0, 14.0), accent_mint);
+                    let add_label = self.shape_cached(tr(lang, "Добавить", "Add"), StyleId::SansBold, None);
+                    builder.text(LogicalPoint::new(tab_x + 28.0, 13.0), add_label, accent_mint);
+                }
+            }
+        }
 
         // 3. Sidebar (Left Pane)
         let sidebar_rect = LogicalRect::from_xywh(0.0, header_h, sidebar_w, body_h);
@@ -1563,6 +1615,7 @@ impl UiRenderer {
                     self.render_single_terminal(
                         &mut builder,
                         app,
+                        app.active_tab,
                         tab,
                         true,
                         rect_left,
@@ -1573,23 +1626,16 @@ impl UiRenderer {
                         bg_app,
                     );
 
-                    // Vertical divider
-                    let divider_rect = LogicalRect::from_xywh(term_x + half_w - 2.0, term_y, 4.0, term_h);
+                    // Vertical divider (clean 2px line)
+                    let divider_rect = LogicalRect::from_xywh(term_x + half_w - 1.0, term_y, 2.0, term_h);
                     builder.fill_rect(divider_rect, card_border, 0.0);
-
-                    // Close split button on divider
-                    let is_sc_hover = app.hover == HoverTarget::TerminalSplitClose;
-                    let sc_rect = LogicalRect::from_xywh(term_x + half_w - 11.0, term_y + 4.0, 22.0, 22.0);
-                    let sc_bg = if is_sc_hover { Color::rgba(239, 68, 68, 240) } else { Color::rgba(22, 35, 62, 240) };
-                    builder.fill_rect(sc_rect, sc_bg, 4.0);
-                    builder.stroke_rect(sc_rect, card_border, 1.0, 4.0);
-                    builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(term_x + half_w - 7.0, term_y + 8.0, 14.0, 14.0), text_main);
 
                     // Right panel (split tab)
                     let split_tab = &app.tabs[split_idx];
                     self.render_single_terminal(
                         &mut builder,
                         app,
+                        split_idx,
                         split_tab,
                         false,
                         rect_right,
@@ -1599,10 +1645,23 @@ impl UiRenderer {
                         text_muted,
                         bg_app,
                     );
+
+                    // Dedicated Close Split button on the top-right of the split pane
+                    let is_sc_hover = app.hover == HoverTarget::TerminalSplitClose;
+                    let sc_btn_w = 24.0;
+                    let sc_btn_h = 22.0;
+                    let sc_x = rect_right.origin.x.0 + rect_right.size.width.0 - sc_btn_w - 6.0;
+                    let sc_y = term_y + 4.0;
+                    let sc_rect = LogicalRect::from_xywh(sc_x, sc_y, sc_btn_w, sc_btn_h);
+                    let sc_bg = if is_sc_hover { Color::rgba(239, 68, 68, 240) } else { Color::rgba(22, 35, 62, 220) };
+                    builder.fill_rect(sc_rect, sc_bg, 4.0);
+                    builder.stroke_rect(sc_rect, if is_sc_hover { Color::rgba(239, 68, 68, 255) } else { card_border }, 1.0, 4.0);
+                    builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(sc_x + 5.0, sc_y + 4.0, 14.0, 14.0), text_main);
                 } else {
                     self.render_single_terminal(
                         &mut builder,
                         app,
+                        app.active_tab,
                         tab,
                         true,
                         term_rect,
@@ -1617,6 +1676,7 @@ impl UiRenderer {
                 self.render_single_terminal(
                     &mut builder,
                     app,
+                    app.active_tab,
                     tab,
                     true,
                     term_rect,
@@ -2752,15 +2812,13 @@ impl UiRenderer {
             if confirm_run.is_open {
                 builder.fill_rect(LogicalRect::from_xywh(0.0, 0.0, w, h), Color::rgba(0, 0, 0, 190), 0.0);
 
-                let modal_w = 600.0f64.min(w - 40.0);
-                let line_count = confirm_run.command.lines().count().max(1);
-                let char_len = confirm_run.command.len();
-                let est_lines = line_count.max((char_len / 55) + 1).min(8);
-                let cmd_box_h = (est_lines as f64 * 20.0 + 24.0).max(48.0);
-                let base_h = if confirm_run.is_dangerous { 280.0 } else { 240.0 };
-                let modal_h = (base_h + cmd_box_h).min(h - 40.0);
-                let modal_x = (w - modal_w) / 2.0;
-                let modal_y = (h - modal_h) / 2.0;
+                let layout = confirm_run.layout(w, h);
+                let modal_w = layout.modal_w;
+                let modal_h = layout.modal_h;
+                let modal_x = layout.modal_x;
+                let modal_y = layout.modal_y;
+                let cmd_box_h = layout.cmd_box_h;
+                let btn_y = layout.btn_y;
                 let modal_rect = LogicalRect::from_xywh(modal_x, modal_y, modal_w, modal_h);
 
                 let border_color = if confirm_run.is_dangerous {
@@ -2831,11 +2889,9 @@ impl UiRenderer {
                 builder.text(LogicalPoint::new(modal_x + 26.0, cur_y + 4.0), target_l, target_fg);
 
                 // Bottom Buttons: Cancel, Copy, Execute
-                let btn_y = modal_y + modal_h - 52.0;
-
                 // 1. Cancel (Esc)
                 let is_cancel_h = app.hover == HoverTarget::ConfirmRunCancel;
-                let cancel_rect = LogicalRect::from_xywh(modal_x + modal_w - 360.0, btn_y, 96.0, 34.0);
+                let cancel_rect = LogicalRect::from_xywh(layout.cancel_rect.0, layout.cancel_rect.1, layout.cancel_rect.2, layout.cancel_rect.3);
                 builder.fill_rect(cancel_rect, if is_cancel_h { Color::rgba(30, 48, 85, 230) } else { Color::rgba(20, 32, 58, 200) }, 5.0);
                 builder.stroke_rect(cancel_rect, card_border, 1.0, 5.0);
                 let cancel_l = self.shape_cached(tr(lang, "Отмена (Esc)", "Cancel (Esc)"), StyleId::Small, None);
@@ -2843,7 +2899,7 @@ impl UiRenderer {
 
                 // 2. Copy Button
                 let is_copy_h = app.hover == HoverTarget::ConfirmRunCopy;
-                let copy_rect = LogicalRect::from_xywh(modal_x + modal_w - 252.0, btn_y, 108.0, 34.0);
+                let copy_rect = LogicalRect::from_xywh(layout.copy_rect.0, layout.copy_rect.1, layout.copy_rect.2, layout.copy_rect.3);
                 builder.fill_rect(copy_rect, if is_copy_h { Color::rgba(35, 55, 95, 230) } else { Color::rgba(20, 35, 65, 200) }, 5.0);
                 builder.stroke_rect(copy_rect, Color::rgba(45, 212, 191, 100), 1.0, 5.0);
                 builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(modal_x + modal_w - 244.0, btn_y + 10.0, 14.0, 14.0), accent_mint);
@@ -2857,7 +2913,7 @@ impl UiRenderer {
 
                 // 3. Execute Button (Enter)
                 let is_exec_h = app.hover == HoverTarget::ConfirmRunExecute;
-                let exec_rect = LogicalRect::from_xywh(modal_x + modal_w - 132.0, btn_y, 110.0, 34.0);
+                let exec_rect = LogicalRect::from_xywh(layout.exec_rect.0, layout.exec_rect.1, layout.exec_rect.2, layout.exec_rect.3);
                 let exec_txt = tr(lang, "Выполнить", "Execute");
 
                 if !confirm_run.can_execute {

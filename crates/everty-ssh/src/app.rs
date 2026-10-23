@@ -759,6 +759,39 @@ pub struct ConfirmDeleteHostModal {
     pub host_address: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ConfirmRunModalLayout {
+    pub modal_x: f64,
+    pub modal_y: f64,
+    pub modal_w: f64,
+    pub modal_h: f64,
+    pub cmd_box_h: f64,
+    pub btn_y: f64,
+    pub cancel_rect: (f64, f64, f64, f64),
+    pub copy_rect: (f64, f64, f64, f64),
+    pub exec_rect: (f64, f64, f64, f64),
+}
+
+impl ConfirmRunModalLayout {
+    #[inline]
+    pub fn cancel_contains(&self, x: f64, y: f64) -> bool {
+        x >= self.cancel_rect.0 && x <= self.cancel_rect.0 + self.cancel_rect.2 &&
+        y >= self.cancel_rect.1 && y <= self.cancel_rect.1 + self.cancel_rect.3
+    }
+
+    #[inline]
+    pub fn copy_contains(&self, x: f64, y: f64) -> bool {
+        x >= self.copy_rect.0 && x <= self.copy_rect.0 + self.copy_rect.2 &&
+        y >= self.copy_rect.1 && y <= self.copy_rect.1 + self.copy_rect.3
+    }
+
+    #[inline]
+    pub fn exec_contains(&self, x: f64, y: f64) -> bool {
+        x >= self.exec_rect.0 && x <= self.exec_rect.0 + self.exec_rect.2 &&
+        y >= self.exec_rect.1 && y <= self.exec_rect.1 + self.exec_rect.3
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfirmRunCommandModal {
     pub is_open: bool,
@@ -769,6 +802,37 @@ pub struct ConfirmRunCommandModal {
     pub target_tab_title: String,
     pub can_execute: bool,
     pub copied_feedback: bool,
+}
+
+impl ConfirmRunCommandModal {
+    pub fn layout(&self, window_w: f64, window_h: f64) -> ConfirmRunModalLayout {
+        let modal_w = 600.0f64.min(window_w - 40.0);
+        let line_count = self.command.lines().count().max(1);
+        let char_len = self.command.len();
+        let est_lines = line_count.max((char_len / 55) + 1).min(8);
+        let cmd_box_h = (est_lines as f64 * 20.0 + 24.0).max(48.0);
+        let base_h = if self.is_dangerous { 280.0 } else { 240.0 };
+        let modal_h = (base_h + cmd_box_h).min(window_h - 40.0);
+        let modal_x = (window_w - modal_w) / 2.0;
+        let modal_y = (window_h - modal_h) / 2.0;
+        let btn_y = modal_y + modal_h - 52.0;
+
+        let cancel_rect = (modal_x + modal_w - 360.0, btn_y, 96.0, 34.0);
+        let copy_rect = (modal_x + modal_w - 252.0, btn_y, 108.0, 34.0);
+        let exec_rect = (modal_x + modal_w - 132.0, btn_y, 110.0, 34.0);
+
+        ConfirmRunModalLayout {
+            modal_x,
+            modal_y,
+            modal_w,
+            modal_h,
+            cmd_box_h,
+            btn_y,
+            cancel_rect,
+            copy_rect,
+            exec_rect,
+        }
+    }
 }
 
 pub fn check_dangerous_command(cmd: &str) -> (bool, Option<String>) {
@@ -947,8 +1011,9 @@ pub enum HoverTarget {
     ConfirmRunCancel,
     ConfirmRunCopy,
     // Terminal Reconnect & Quick Actions
-    TerminalReconnect,
-    TerminalCloseTab,
+    TerminalReconnect(usize),
+    TerminalCloseTab(usize),
+    TerminalStatusBanner(usize),
     QuickAction(QuickActionCmd),
     TerminalSearchOpenBtn,
     TerminalSearchCloseBtn,
@@ -1118,6 +1183,10 @@ pub struct AppState {
     pub snippets: Vec<SnippetRecord>,
     pub selected_sidebar_item: usize,
 
+    // Window Size Cache
+    pub last_window_w: f64,
+    pub last_window_h: f64,
+
     // Async Bridge
     pub event_tx: Sender<AppEvent>,
     pub event_rx: Receiver<AppEvent>,
@@ -1193,6 +1262,8 @@ impl AppState {
             recent_sessions,
             snippets,
             selected_sidebar_item: 0,
+            last_window_w: 1120.0,
+            last_window_h: 720.0,
             event_tx,
             event_rx,
             tokio_handle,
@@ -1200,10 +1271,24 @@ impl AppState {
     }
 
     pub fn resize_terminals(&mut self, logical_w: f64, logical_h: f64) {
+        self.last_window_w = logical_w;
+        self.last_window_h = logical_h;
+
         let term_w = (logical_w - self.sidebar_width).max(0.0);
         let term_h = (logical_h - self.header_height - self.footer_height).max(0.0);
-        let cols = ((term_w - 24.0) / TERMINAL_CHAR_WIDTH).floor().max(20.0) as usize;
-        let rows = ((term_h - 20.0) / TERMINAL_LINE_HEIGHT).floor().max(5.0) as usize;
+
+        let eff_term_w = if self.split_tab.is_some() {
+            ((term_w / 2.0).floor() - 2.0).max(0.0)
+        } else {
+            term_w
+        };
+
+        let cols = ((eff_term_w - 24.0) / TERMINAL_CHAR_WIDTH).floor().max(20.0) as usize;
+        // Available vertical height inside terminal viewport:
+        // Subtract toolbar (30.0) and top+bottom padding (6.0 + 6.0 = 12.0) -> 42.0.
+        // This ensures the PTY row count exactly matches the visible lines in UI,
+        // so the active prompt at the bottom line is always visible.
+        let rows = ((term_h - 42.0) / TERMINAL_LINE_HEIGHT).floor().max(2.0) as usize;
 
         if self.terminal_cols != cols || self.terminal_rows != rows {
             self.terminal_cols = cols;
@@ -1380,36 +1465,23 @@ impl AppState {
         // 0.005 Confirm Run Command Modal
         if let Some(confirm_run) = &self.confirm_run_modal {
             if confirm_run.is_open {
-                let modal_w = 600.0f64.min(w - 40.0);
-                let approx_lines = (confirm_run.command.len() / 55) + 1;
-                let cmd_box_h = (approx_lines as f64 * 18.0 + 24.0).clamp(44.0, 160.0);
-                let base_h = if confirm_run.is_dangerous { 240.0 } else { 200.0 };
-                let modal_h = (base_h + cmd_box_h).min(h - 40.0);
-                let modal_x = (w - modal_w) / 2.0;
-                let modal_y = (h - modal_h) / 2.0;
+                let layout = confirm_run.layout(w, h);
 
-                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                if x >= layout.modal_x && x <= layout.modal_x + layout.modal_w && y >= layout.modal_y && y <= layout.modal_y + layout.modal_h {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
-                    let btn_y = modal_y + modal_h - 52.0;
 
-                    if y >= btn_y && y <= btn_y + 36.0 {
-                        // Cancel button
-                        if x >= modal_x + modal_w - 360.0 && x <= modal_x + modal_w - 260.0 {
-                            new_hover = HoverTarget::ConfirmRunCancel;
-                            cursor = CursorIcon::Pointer;
-                        }
-                        // Copy button
-                        else if x >= modal_x + modal_w - 250.0 && x <= modal_x + modal_w - 140.0 {
-                            new_hover = HoverTarget::ConfirmRunCopy;
-                            cursor = CursorIcon::Pointer;
-                        }
-                        // Execute button
-                        else if x >= modal_x + modal_w - 130.0 && x <= modal_x + modal_w - 20.0 {
-                            new_hover = HoverTarget::ConfirmRunExecute;
-                            cursor = if confirm_run.can_execute { CursorIcon::Pointer } else { CursorIcon::NotAllowed };
-                        }
+                    if layout.cancel_contains(x, y) {
+                        new_hover = HoverTarget::ConfirmRunCancel;
+                        cursor = CursorIcon::Pointer;
+                    } else if layout.copy_contains(x, y) {
+                        new_hover = HoverTarget::ConfirmRunCopy;
+                        cursor = CursorIcon::Pointer;
+                    } else if layout.exec_contains(x, y) {
+                        new_hover = HoverTarget::ConfirmRunExecute;
+                        cursor = if confirm_run.can_execute { CursorIcon::Pointer } else { CursorIcon::NotAllowed };
                     }
+
                     let changed = old_hover != new_hover;
                     self.hover = new_hover;
                     return (changed, cursor);
@@ -1875,13 +1947,23 @@ impl AppState {
             } else if x >= w - 94.0 && x <= w - 52.0 {
                 new_hover = HoverTarget::HeaderLangBtn;
                 cursor = CursorIcon::Pointer;
-            } else if x >= w - 94.0 - 160.0 - 6.0 && x < w - 94.0 {
-                new_hover = HoverTarget::HeaderSearchBtn;
-                cursor = CursorIcon::Pointer;
             } else {
-                let mut tab_x = 160.0;
+                let compact_search = w < 880.0 || (self.tabs.len() >= 3 && w < 1050.0);
+                let search_btn_w = if compact_search { 32.0 } else { 150.0 };
+                let search_btn_x = w - 100.0 - search_btn_w;
+
+                let tab_start_x = 150.0;
+                let compact_add = w < 720.0 || (self.tabs.len() >= 3 && w < 920.0);
+                let add_btn_w = if compact_add { 32.0 } else { 110.0 };
+                let max_tabs_w = (search_btn_x - 10.0 - tab_start_x - add_btn_w - 6.0).max(60.0);
+                let num_tabs = self.tabs.len().max(1);
+                let tab_w = ((max_tabs_w - (num_tabs - 1) as f64 * 6.0) / num_tabs as f64).clamp(60.0, 175.0);
+
+                let mut tab_x = tab_start_x;
                 for (i, _) in self.tabs.iter().enumerate() {
-                    let tab_w = 175.0;
+                    if tab_x + tab_w > search_btn_x - 4.0 {
+                        break;
+                    }
                     if x >= tab_x && x <= tab_x + tab_w {
                         if x >= tab_x + tab_w - 24.0 {
                             new_hover = HoverTarget::HeaderTabClose(i);
@@ -1894,10 +1976,14 @@ impl AppState {
                     tab_x += tab_w + 6.0;
                 }
 
-                let add_btn_w = 125.0;
-                if x >= tab_x && x <= tab_x + add_btn_w {
-                    new_hover = HoverTarget::HeaderAddBtn;
-                    cursor = CursorIcon::Pointer;
+                if new_hover == HoverTarget::None {
+                    if tab_x + add_btn_w <= search_btn_x - 4.0 && x >= tab_x && x <= tab_x + add_btn_w {
+                        new_hover = HoverTarget::HeaderAddBtn;
+                        cursor = CursorIcon::Pointer;
+                    } else if x >= search_btn_x && x <= search_btn_x + search_btn_w {
+                        new_hover = HoverTarget::HeaderSearchBtn;
+                        cursor = CursorIcon::Pointer;
+                    }
                 }
             }
 
@@ -2080,31 +2166,104 @@ impl AppState {
                 }
             }
 
-            // 5.2 Split View Close button and Panel Switch
-            if let Some(_s_tab) = self.split_tab {
-                let split_x = sidebar_w + (w - sidebar_w) / 2.0;
-                if (x - split_x).abs() <= 16.0 && y >= header_h + 4.0 && y <= header_h + 30.0 {
+            // 5.2 Split View Close button on top-right of split panel
+            let is_split = self.split_tab.is_some()
+                && self.split_tab.unwrap() < self.tabs.len()
+                && self.split_tab.unwrap() != self.active_tab;
+
+            let total_term_w = (w - sidebar_w).max(0.0);
+
+            if is_split {
+                let right_w = (total_term_w - (total_term_w / 2.0).floor() - 2.0).max(0.0);
+                let right_x = sidebar_w + (total_term_w / 2.0).floor() + 2.0;
+                let sc_x = right_x + right_w - 30.0;
+                if x >= sc_x && x <= sc_x + 24.0 && y >= header_h + 4.0 && y <= header_h + 26.0 {
                     new_hover = HoverTarget::TerminalSplitClose;
                     cursor = CursorIcon::Pointer;
-                    let changed = old_hover != new_hover;
-                    self.hover = new_hover;
-                    return (changed, cursor);
-                } else if x > split_x && y >= header_h && y <= h - self.footer_height {
-                    new_hover = HoverTarget::SplitTerminalArea;
-                    cursor = CursorIcon::Text;
                     let changed = old_hover != new_hover;
                     self.hover = new_hover;
                     return (changed, cursor);
                 }
             }
 
-            // 5.3 Quick Actions Toolbar or Reconnect Banner
-            if let Some(tab) = self.tabs.get(self.active_tab) {
-                if tab.handle.is_some() {
-                    let bar_y = header_h + 3.0;
-                    let bar_h = 28.0;
+            // 5.3 Terminal Panels (Left & Right if split, otherwise Single)
+            let panels: Vec<(usize, bool, f64, f64)> = if is_split {
+                let left_w = ((total_term_w / 2.0).floor() - 2.0).max(0.0);
+                let right_x = sidebar_w + (total_term_w / 2.0).floor() + 2.0;
+                let right_w = (total_term_w - (total_term_w / 2.0).floor() - 2.0).max(0.0);
+                vec![
+                    (self.active_tab, true, sidebar_w, left_w),
+                    (self.split_tab.unwrap(), false, right_x, right_w),
+                ]
+            } else {
+                vec![(self.active_tab, true, sidebar_w, total_term_w)]
+            };
+
+            for (tab_idx, is_active, px_start, pw) in panels {
+                if x < px_start || x > px_start + pw || y < header_h || y > h - self.footer_height {
+                    continue;
+                }
+
+                let tab = match self.tabs.get(tab_idx) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                // A. Disconnected Tab -> Reconnect / Close Banner at bottom
+                if tab.handle.is_none() {
+                    let banner_y = h - self.footer_height - 44.0;
+                    let banner_h = 38.0;
+                    if y >= banner_y && y <= banner_y + banner_h {
+                        let close_btn_w = if pw >= 480.0 { 92.0 } else { 32.0 };
+                        let close_x = px_start + pw - 12.0 - close_btn_w;
+
+                        let recon_btn_w = if pw >= 540.0 {
+                            180.0
+                        } else if pw >= 360.0 {
+                            105.0
+                        } else {
+                            32.0
+                        };
+                        let recon_x = close_x - 6.0 - recon_btn_w;
+
+                        if x >= close_x && x <= close_x + close_btn_w {
+                            new_hover = HoverTarget::TerminalCloseTab(tab_idx);
+                            cursor = CursorIcon::Pointer;
+                            break;
+                        } else if x >= recon_x && x <= recon_x + recon_btn_w {
+                            new_hover = HoverTarget::TerminalReconnect(tab_idx);
+                            cursor = CursorIcon::Pointer;
+                            break;
+                        } else {
+                            new_hover = HoverTarget::TerminalStatusBanner(tab_idx);
+                            cursor = CursorIcon::Default;
+                            break;
+                        }
+                    }
+                } else {
+                    // B. Connected Tab -> Diagnostics Toolbar (Htop, Df, Free, Search, Split)
+                    let bar_y = header_h;
+                    let bar_h = 30.0;
                     if y >= bar_y && y <= bar_y + bar_h {
-                        let mut px = sidebar_w + 12.0;
+                        if is_active && pw >= 320.0 {
+                            let search_rect_x = px_start + pw - 170.0;
+                            let search_rect_w = 80.0;
+                            let split_rect_x = px_start + pw - 84.0;
+                            let split_rect_w = 76.0;
+
+                            if x >= search_rect_x && x <= search_rect_x + search_rect_w {
+                                new_hover = HoverTarget::TerminalSearchOpenBtn;
+                                cursor = CursorIcon::Pointer;
+                                break;
+                            } else if x >= split_rect_x && x <= split_rect_x + split_rect_w {
+                                new_hover = HoverTarget::TerminalSplitBtn;
+                                cursor = CursorIcon::Pointer;
+                                break;
+                            }
+                        }
+
+                        let right_reserved = if is_active && pw >= 320.0 { 180.0 } else { 12.0 };
+                        let mut pill_x = px_start + 8.0;
                         let pills = [
                             (QuickActionCmd::Htop, 78.0),
                             (QuickActionCmd::Df, 74.0),
@@ -2113,54 +2272,38 @@ impl AppState {
                             (QuickActionCmd::Docker, 82.0),
                             (QuickActionCmd::Ports, 92.0),
                         ];
-                        for (cmd, pw) in pills {
-                            if x >= px && x <= px + pw {
-                                new_hover = HoverTarget::QuickAction(cmd);
-                                cursor = CursorIcon::Pointer;
+                        for (cmd, pill_w) in pills {
+                            if pill_x + pill_w + 6.0 > px_start + pw - right_reserved {
                                 break;
                             }
-                            px += pw + 6.0;
-                        }
-
-                        // Right-aligned toolbar buttons: Search & Split
-                        if new_hover == HoverTarget::None {
-                            if x >= w - 185.0 && x <= w - 95.0 {
-                                new_hover = HoverTarget::TerminalSearchOpenBtn;
-                                cursor = CursorIcon::Pointer;
-                            } else if x >= w - 90.0 && x <= w - 16.0 {
-                                new_hover = HoverTarget::TerminalSplitBtn;
-                                cursor = CursorIcon::Pointer;
+                            if x >= pill_x && x <= pill_x + pill_w {
+                                if is_active {
+                                    new_hover = HoverTarget::QuickAction(cmd);
+                                    cursor = CursorIcon::Pointer;
+                                }
+                                break;
                             }
+                            pill_x += pill_w + 6.0;
                         }
-                    }
-                } else {
-                    // Reconnect Banner at bottom of disconnected terminal
-                    let banner_y = h - self.footer_height - 46.0;
-                    let banner_h = 40.0;
-                    if y >= banner_y && y <= banner_y + banner_h {
-                        if x >= w - 370.0 && x <= w - 130.0 {
-                            new_hover = HoverTarget::TerminalReconnect;
-                            cursor = CursorIcon::Pointer;
-                        } else if x >= w - 120.0 && x <= w - 20.0 {
-                            new_hover = HoverTarget::TerminalCloseTab;
-                            cursor = CursorIcon::Pointer;
+                        if new_hover != HoverTarget::None {
+                            break;
                         }
                     }
                 }
-            }
 
-            // 5.4 Scrollbar or Terminal Area
-            if new_hover == HoverTarget::None {
-                let sb_w = 8.0;
-                let sb_margin_right = 4.0;
-                let sb_x = w - sb_w - sb_margin_right;
-                let sb_y = header_h + 6.0;
-                let sb_h = (h - header_h - self.footer_height - 12.0).max(20.0);
+                // C. Scrollbar (only on active panel)
+                if new_hover == HoverTarget::None && is_active {
+                    let sb_w = 8.0;
+                    let sb_margin_right = 4.0;
+                    let sb_x = px_start + pw - sb_w - sb_margin_right;
+                    let bar_h = if tab.handle.is_some() { 30.0 } else { 0.0 };
+                    let sb_y = header_h + bar_h + 6.0;
+                    let banner_h = if tab.handle.is_none() { 46.0 } else { 0.0 };
+                    let sb_h = (h - header_h - self.footer_height - bar_h - banner_h - 12.0).max(20.0);
 
-                if let Some(tab) = self.tabs.get(self.active_tab) {
                     let scrollback_len = tab.terminal.scrollback_len();
                     let scroll_offset = tab.terminal.scroll_offset();
-                    let rows = self.terminal_rows;
+                    let rows = tab.terminal.rows();
 
                     let (thumb_y, thumb_h) = if scrollback_len > 0 {
                         let total_lines = scrollback_len + rows;
@@ -2182,10 +2325,20 @@ impl AppState {
                             new_hover = HoverTarget::TerminalScrollbarTrack;
                             cursor = CursorIcon::Pointer;
                         }
-                    } else if x >= sidebar_w && y >= header_h && y <= h - self.footer_height {
+                        break;
+                    }
+                }
+
+                // D. Terminal Area
+                if new_hover == HoverTarget::None {
+                    if !is_active {
+                        new_hover = HoverTarget::SplitTerminalArea;
+                        cursor = CursorIcon::Pointer;
+                    } else {
                         new_hover = HoverTarget::TerminalArea;
                         cursor = CursorIcon::Text;
                     }
+                    break;
                 }
             }
         }
@@ -3381,10 +3534,12 @@ impl AppState {
             let next_tab = (self.active_tab + 1) % self.tabs.len();
             self.split_tab = Some(next_tab);
         }
+        self.resize_terminals(self.last_window_w, self.last_window_h);
     }
 
     pub fn close_split_view(&mut self) {
         self.split_tab = None;
+        self.resize_terminals(self.last_window_w, self.last_window_h);
     }
 
     pub fn open_terminal_search(&mut self) {
@@ -3649,6 +3804,7 @@ impl AppState {
         // 3. Regular Terminal Input
         let mut recorded_cmd = None;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.terminal.scroll_to_bottom();
             for ch in text.chars() {
                 if ch == '\r' || ch == '\n' {
                     let cmd = tab.current_input_buffer.trim().to_string();
@@ -3693,6 +3849,7 @@ impl AppState {
 
     pub fn send_to_active_terminal(&mut self, text: &str) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.terminal.scroll_to_bottom();
             if let Some(handle) = &tab.handle {
                 let data = text.as_bytes().to_vec();
                 let handle_clone = handle.input_tx.clone();
@@ -3844,72 +4001,80 @@ impl AppState {
         }
     }
 
-    pub fn get_hover_tooltip_text(&self, target: HoverTarget) -> Option<&'static str> {
+    pub fn get_hover_tooltip_text<'a>(&'a self, target: HoverTarget) -> Option<std::borrow::Cow<'a, str>> {
         let lang = self.hosts_doc.settings.language;
-        match target {
-            HoverTarget::HeaderAddBtn => Some(tr(lang, "Добавить новый хост (Ctrl+N)", "Add new host (Ctrl+N)")),
-            HoverTarget::HeaderSearchBtn => Some(tr(lang, "Поиск по истории команд (Ctrl+R)", "Search command history (Ctrl+R)")),
-            HoverTarget::HeaderLangBtn => Some(tr(lang, "Переключить язык (RU/EN)", "Switch language (RU/EN)")),
-            HoverTarget::HeaderSettingsBtn => Some(tr(lang, "Настройки: мастер-пароль, язык, бэкап", "Settings: master password, language, backup")),
-            HoverTarget::SidebarSplitter => Some(tr(lang, "Потяните мышью для изменения ширины панели", "Drag to resize sidebar")),
-            HoverTarget::SidebarAddHostBtn => Some(tr(lang, "Добавить новый сервер", "Add new server")),
-            HoverTarget::SidebarAddSnippetBtn => Some(tr(lang, "Создать новый сниппет", "Create new snippet")),
-            HoverTarget::HostDeployKey(_) => Some(tr(lang, "Сгенерировать и установить SSH ключ на сервер", "Generate & deploy SSH key to server")),
-            HoverTarget::HostConnect(_) => Some(tr(lang, "Подключиться к серверу", "Connect to server")),
-            HoverTarget::HostEdit(_) => Some(tr(lang, "Редактировать параметры сервера", "Edit server configuration")),
-            HoverTarget::HostDelete(_) => Some(tr(lang, "Удалить сервер из списка", "Delete server from list")),
-            HoverTarget::SessionCard(_) => Some(tr(lang, "Открыть подробный дашборд сессии и журнал команд", "Open session dashboard & command log")),
-            HoverTarget::SessionDashboardReconnect => Some(tr(lang, "Переподключиться к серверу в новой вкладке", "Reconnect to server in new tab")),
-            HoverTarget::SessionDashboardDelete => Some(tr(lang, "Удалить эту сессию из истории", "Delete this session from history")),
-            HoverTarget::SessionDashboardRunCmd(_) => Some(tr(lang, "Запустить команду в активной консоли", "Run command in active terminal")),
-            HoverTarget::SessionDashboardCopyCmd(_) => Some(tr(lang, "Скопировать команду в буфер", "Copy command to clipboard")),
-            HoverTarget::SnippetRun(_) => Some(tr(lang, "Запустить сниппет в активном терминале", "Run snippet in active terminal")),
-            HoverTarget::SnippetCopy(_) => Some(tr(lang, "Скопировать текст сниппета", "Copy snippet text")),
-            HoverTarget::SnippetEdit(_) => Some(tr(lang, "Редактировать параметры сниппета", "Edit snippet configuration")),
-            HoverTarget::SnippetDelete(_) => Some(tr(lang, "Удалить сниппет", "Delete snippet")),
-            HoverTarget::ConfirmDeleteSnippetConfirm => Some(tr(lang, "Подтвердить удаление сниппета", "Confirm snippet deletion")),
-            HoverTarget::ConfirmDeleteSnippetCancel => Some(tr(lang, "Отменить удаление сниппета (Esc)", "Cancel snippet deletion (Esc)")),
-            HoverTarget::KeyToolGenerateBtn => Some(tr(lang, "Сгенерировать ключевую пару OpenSSH", "Generate OpenSSH key pair")),
-            HoverTarget::KeyToolSendTermBtn => Some(tr(lang, "Отправить ключ и настроить authorized_keys", "Deploy key to authorized_keys")),
-            HoverTarget::KeyToolBindHostBtn => Some(tr(lang, "Привязать ключ к профилю сервера", "Attach key to server profile")),
-            HoverTarget::KeyToolCopyPubBtn => Some(tr(lang, "Скопировать публичный ключ", "Copy public key")),
-            HoverTarget::ModalBrowseKey => Some(tr(lang, "Выбрать файл ключа через проводник", "Browse key file via explorer")),
-            HoverTarget::ModalGenerateKey => Some(tr(lang, "Сгенерировать новый SSH ключ", "Generate new SSH key")),
-            HoverTarget::SidebarSearchHost => Some(tr(lang, "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)", "Search servers by name, host, user or group (Esc to clear)")),
-            HoverTarget::SidebarSearchSnippet => Some(tr(lang, "Поиск сохраненных сниппетов (Esc для сброса)", "Search saved snippets (Esc to clear)")),
-            HoverTarget::SidebarSearchCommand => Some(tr(lang, "Поиск в истории команд", "Search command history")),
-            HoverTarget::HostKeyModalAccept => Some(tr(lang, "Подтвердить ключ хоста и продолжить подключение", "Accept host key and continue connection")),
-            HoverTarget::HostKeyModalReject => Some(tr(lang, "Отклонить ключ и разорвать соединение (Esc)", "Reject host key and abort connection (Esc)")),
-            HoverTarget::HostKeyModalCopy => Some(tr(lang, "Скопировать отпечаток (fingerprint) в буфер", "Copy fingerprint to clipboard")),
-            HoverTarget::ConfirmDeleteConfirm => Some(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
-            HoverTarget::ConfirmDeleteCancel => Some(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
-            HoverTarget::SettingsClose => Some(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
-            HoverTarget::SettingsSavePassword => Some(tr(lang, "Сохранить настройки мастер-пароля", "Save master password settings")),
-            HoverTarget::SettingsRemovePassword => Some(tr(lang, "Отключить защиту паролем", "Disable password protection")),
-            HoverTarget::SettingsExportJson => Some(tr(lang, "Экспортировать серверы и настройки в JSON файл", "Export servers & settings to JSON")),
-            HoverTarget::SettingsImportJson => Some(tr(lang, "Импортировать серверы из файла резервной копии", "Import servers from JSON backup")),
-            HoverTarget::SettingsSaveGeneral => Some(tr(lang, "Сохранить общие настройки", "Save general settings")),
-            HoverTarget::SettingsToggleConfirmDelete => Some(tr(lang, "Включить/выключить подтверждение удаления", "Toggle delete confirmation dialog")),
-            HoverTarget::SettingsSetLanguage(AppLanguage::Ru) => Some("Переключить интерфейс на Русский язык"),
-            HoverTarget::SettingsSetLanguage(AppLanguage::En) => Some("Switch interface to English language"),
-            HoverTarget::LockUnlockBtn => Some(tr(lang, "Разблокировать приложение (Enter)", "Unlock application (Enter)")),
-            HoverTarget::ConfirmRunExecute => Some(tr(lang, "Выполнить команду в консоли (Enter)", "Execute command in terminal (Enter)")),
-            HoverTarget::ConfirmRunCancel => Some(tr(lang, "Отменить запуск команды (Esc)", "Cancel command execution (Esc)")),
-            HoverTarget::ConfirmRunCopy => Some(tr(lang, "Скопировать текст команды в буфер", "Copy command text")),
-            HoverTarget::TerminalReconnect => Some(tr(lang, "Повторно подключиться к серверу в этой вкладке", "Reconnect session in this tab")),
-            HoverTarget::TerminalCloseTab => Some(tr(lang, "Закрыть эту вкладку терминала", "Close this terminal tab")),
-            HoverTarget::QuickAction(cmd) => Some(cmd.tooltip()),
-            HoverTarget::TerminalSearchOpenBtn => Some(tr(lang, "Поиск текста в консоли (Ctrl+F)", "Search text in terminal (Ctrl+F)")),
-            HoverTarget::TerminalSearchCloseBtn => Some(tr(lang, "Закрыть поиск (Esc)", "Close search (Esc)")),
-            HoverTarget::TerminalSearchPrevBtn => Some(tr(lang, "Предыдущее совпадение (Shift+Enter)", "Previous match (Shift+Enter)")),
-            HoverTarget::TerminalSearchNextBtn => Some(tr(lang, "Следующее совпадение (Enter)", "Next match (Enter)")),
-            HoverTarget::TerminalSearchCaseToggle => Some(tr(lang, "Учитывать регистр символов (Aa)", "Match case (Aa)")),
-            HoverTarget::TerminalSearchInput => Some(tr(lang, "Поле поиска текста в терминале", "Terminal search input")),
-            HoverTarget::TerminalSplitBtn => Some(tr(lang, "Разделить экран терминала (Ctrl+Alt+S)", "Split terminal screen (Ctrl+Alt+S)")),
-            HoverTarget::TerminalSplitClose => Some(tr(lang, "Закрыть разделение терминала", "Close terminal split")),
-            HoverTarget::SplitTerminalArea => Some(tr(lang, "Активировать этот терминал", "Activate this terminal")),
-            _ => None,
-        }
+        let s = match target {
+            HoverTarget::HeaderAddBtn => std::borrow::Cow::Borrowed(tr(lang, "Добавить новый хост (Ctrl+N)", "Add new host (Ctrl+N)")),
+            HoverTarget::HeaderSearchBtn => std::borrow::Cow::Borrowed(tr(lang, "Поиск по истории команд (Ctrl+R)", "Search command history (Ctrl+R)")),
+            HoverTarget::HeaderLangBtn => std::borrow::Cow::Borrowed(tr(lang, "Переключить язык (RU/EN)", "Switch language (RU/EN)")),
+            HoverTarget::HeaderSettingsBtn => std::borrow::Cow::Borrowed(tr(lang, "Настройки: мастер-пароль, язык, бэкап", "Settings: master password, language, backup")),
+            HoverTarget::SidebarSplitter => std::borrow::Cow::Borrowed(tr(lang, "Потяните мышью для изменения ширины панели", "Drag to resize sidebar")),
+            HoverTarget::SidebarAddHostBtn => std::borrow::Cow::Borrowed(tr(lang, "Добавить новый сервер", "Add new server")),
+            HoverTarget::SidebarAddSnippetBtn => std::borrow::Cow::Borrowed(tr(lang, "Создать новый сниппет", "Create new snippet")),
+            HoverTarget::HostDeployKey(_) => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать и установить SSH ключ на сервер", "Generate & deploy SSH key to server")),
+            HoverTarget::HostConnect(_) => std::borrow::Cow::Borrowed(tr(lang, "Подключиться к серверу", "Connect to server")),
+            HoverTarget::HostEdit(_) => std::borrow::Cow::Borrowed(tr(lang, "Редактировать параметры сервера", "Edit server configuration")),
+            HoverTarget::HostDelete(_) => std::borrow::Cow::Borrowed(tr(lang, "Удалить сервер из списка", "Delete server from list")),
+            HoverTarget::SessionCard(_) => std::borrow::Cow::Borrowed(tr(lang, "Открыть подробный дашборд сессии и журнал команд", "Open session dashboard & command log")),
+            HoverTarget::SessionDashboardReconnect => std::borrow::Cow::Borrowed(tr(lang, "Переподключиться к серверу в новой вкладке", "Reconnect to server in new tab")),
+            HoverTarget::SessionDashboardDelete => std::borrow::Cow::Borrowed(tr(lang, "Удалить эту сессию из истории", "Delete this session from history")),
+            HoverTarget::SessionDashboardRunCmd(_) => std::borrow::Cow::Borrowed(tr(lang, "Запустить команду в активной консоли", "Run command in active terminal")),
+            HoverTarget::SessionDashboardCopyCmd(_) => std::borrow::Cow::Borrowed(tr(lang, "Скопировать команду в буфер", "Copy command to clipboard")),
+            HoverTarget::SnippetRun(_) => std::borrow::Cow::Borrowed(tr(lang, "Запустить сниппет в активном терминале", "Run snippet in active terminal")),
+            HoverTarget::SnippetCopy(_) => std::borrow::Cow::Borrowed(tr(lang, "Скопировать текст сниппета", "Copy snippet text")),
+            HoverTarget::SnippetEdit(_) => std::borrow::Cow::Borrowed(tr(lang, "Редактировать параметры сниппета", "Edit snippet configuration")),
+            HoverTarget::SnippetDelete(_) => std::borrow::Cow::Borrowed(tr(lang, "Удалить сниппет", "Delete snippet")),
+            HoverTarget::ConfirmDeleteSnippetConfirm => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить удаление сниппета", "Confirm snippet deletion")),
+            HoverTarget::ConfirmDeleteSnippetCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить удаление сниппета (Esc)", "Cancel snippet deletion (Esc)")),
+            HoverTarget::KeyToolGenerateBtn => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать ключевую пару OpenSSH", "Generate OpenSSH key pair")),
+            HoverTarget::KeyToolSendTermBtn => std::borrow::Cow::Borrowed(tr(lang, "Отправить ключ и настроить authorized_keys", "Deploy key to authorized_keys")),
+            HoverTarget::KeyToolBindHostBtn => std::borrow::Cow::Borrowed(tr(lang, "Привязать ключ к профилю сервера", "Attach key to server profile")),
+            HoverTarget::KeyToolCopyPubBtn => std::borrow::Cow::Borrowed(tr(lang, "Скопировать публичный ключ", "Copy public key")),
+            HoverTarget::ModalBrowseKey => std::borrow::Cow::Borrowed(tr(lang, "Выбрать файл ключа через проводник", "Browse key file via explorer")),
+            HoverTarget::ModalGenerateKey => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать новый SSH ключ", "Generate new SSH key")),
+            HoverTarget::SidebarSearchHost => std::borrow::Cow::Borrowed(tr(lang, "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)", "Search servers by name, host, user or group (Esc to clear)")),
+            HoverTarget::SidebarSearchSnippet => std::borrow::Cow::Borrowed(tr(lang, "Поиск сохраненных сниппетов (Esc для сброса)", "Search saved snippets (Esc to clear)")),
+            HoverTarget::SidebarSearchCommand => std::borrow::Cow::Borrowed(tr(lang, "Поиск в истории команд", "Search command history")),
+            HoverTarget::HostKeyModalAccept => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить ключ хоста и продолжить подключение", "Accept host key and continue connection")),
+            HoverTarget::HostKeyModalReject => std::borrow::Cow::Borrowed(tr(lang, "Отклонить ключ и разорвать соединение (Esc)", "Reject host key and abort connection (Esc)")),
+            HoverTarget::HostKeyModalCopy => std::borrow::Cow::Borrowed(tr(lang, "Скопировать отпечаток (fingerprint) в буфер", "Copy fingerprint to clipboard")),
+            HoverTarget::ConfirmDeleteConfirm => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
+            HoverTarget::ConfirmDeleteCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
+            HoverTarget::SettingsClose => std::borrow::Cow::Borrowed(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
+            HoverTarget::SettingsSavePassword => std::borrow::Cow::Borrowed(tr(lang, "Сохранить настройки мастер-пароля", "Save master password settings")),
+            HoverTarget::SettingsRemovePassword => std::borrow::Cow::Borrowed(tr(lang, "Отключить защиту паролем", "Disable password protection")),
+            HoverTarget::SettingsExportJson => std::borrow::Cow::Borrowed(tr(lang, "Экспортировать серверы и настройки в JSON файл", "Export servers & settings to JSON")),
+            HoverTarget::SettingsImportJson => std::borrow::Cow::Borrowed(tr(lang, "Импортировать серверы из файла резервной копии", "Import servers from JSON backup")),
+            HoverTarget::SettingsSaveGeneral => std::borrow::Cow::Borrowed(tr(lang, "Сохранить общие настройки", "Save general settings")),
+            HoverTarget::SettingsToggleConfirmDelete => std::borrow::Cow::Borrowed(tr(lang, "Включить/выключить подтверждение удаления", "Toggle delete confirmation dialog")),
+            HoverTarget::SettingsSetLanguage(AppLanguage::Ru) => std::borrow::Cow::Borrowed("Переключить интерфейс на Русский язык"),
+            HoverTarget::SettingsSetLanguage(AppLanguage::En) => std::borrow::Cow::Borrowed("Switch interface to English language"),
+            HoverTarget::LockUnlockBtn => std::borrow::Cow::Borrowed(tr(lang, "Разблокировать приложение (Enter)", "Unlock application (Enter)")),
+            HoverTarget::ConfirmRunExecute => std::borrow::Cow::Borrowed(tr(lang, "Выполнить команду в консоли (Enter)", "Execute command in terminal (Enter)")),
+            HoverTarget::ConfirmRunCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить запуск команды (Esc)", "Cancel command execution (Esc)")),
+            HoverTarget::ConfirmRunCopy => std::borrow::Cow::Borrowed(tr(lang, "Скопировать текст команды в буфер", "Copy command text")),
+            HoverTarget::TerminalReconnect(_) => std::borrow::Cow::Borrowed(tr(lang, "Повторно подключиться к серверу в этой вкладке", "Reconnect session in this tab")),
+            HoverTarget::TerminalCloseTab(_) => std::borrow::Cow::Borrowed(tr(lang, "Закрыть эту вкладку терминала", "Close this terminal tab")),
+            HoverTarget::TerminalStatusBanner(tab_idx) => {
+                if let Some(tab) = self.tabs.get(tab_idx) {
+                    std::borrow::Cow::Borrowed(tab.status.as_str())
+                } else {
+                    return None;
+                }
+            }
+            HoverTarget::QuickAction(cmd) => std::borrow::Cow::Borrowed(cmd.tooltip()),
+            HoverTarget::TerminalSearchOpenBtn => std::borrow::Cow::Borrowed(tr(lang, "Поиск текста в консоли (Ctrl+F)", "Search text in terminal (Ctrl+F)")),
+            HoverTarget::TerminalSearchCloseBtn => std::borrow::Cow::Borrowed(tr(lang, "Закрыть поиск (Esc)", "Close search (Esc)")),
+            HoverTarget::TerminalSearchPrevBtn => std::borrow::Cow::Borrowed(tr(lang, "Предыдущее совпадение (Shift+Enter)", "Previous match (Shift+Enter)")),
+            HoverTarget::TerminalSearchNextBtn => std::borrow::Cow::Borrowed(tr(lang, "Следующее совпадение (Enter)", "Next match (Enter)")),
+            HoverTarget::TerminalSearchCaseToggle => std::borrow::Cow::Borrowed(tr(lang, "Учитывать регистр символов (Aa)", "Match case (Aa)")),
+            HoverTarget::TerminalSearchInput => std::borrow::Cow::Borrowed(tr(lang, "Поле поиска текста в терминале", "Terminal search input")),
+            HoverTarget::TerminalSplitBtn => std::borrow::Cow::Borrowed(tr(lang, "Разделить экран терминала (Ctrl+Alt+S)", "Split terminal screen (Ctrl+Alt+S)")),
+            HoverTarget::TerminalSplitClose => std::borrow::Cow::Borrowed(tr(lang, "Закрыть разделение терминала", "Close terminal split")),
+            HoverTarget::SplitTerminalArea => std::borrow::Cow::Borrowed(tr(lang, "Активировать этот терминал", "Activate this terminal")),
+            _ => return None,
+        };
+        Some(s)
     }
 
     pub fn get_text_input_mut(&mut self, id: InputFieldId) -> Option<&mut TextInput> {
@@ -4407,5 +4572,129 @@ mod tests {
         let end_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::End);
         app.handle_text_navigation_key(&end_key, false, false);
         assert_eq!(app.add_host_modal.name.cursor, 14);
+    }
+
+    #[test]
+    fn test_header_tabs_hit_testing_stability() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        // Create 2 tabs (index 0 and index 1)
+        app.tabs.push(SessionTab {
+            id: "tab-01".into(),
+            title: "server-alpha".into(),
+            host_address: "192.168.1.1".into(),
+            username: "root".into(),
+            status: "🟢 Connected".into(),
+            terminal: Terminal::new(80, 24, 100),
+            handle: None,
+            current_input_buffer: String::new(),
+            host_id: None,
+            host_config: None,
+        });
+        app.tabs.push(SessionTab {
+            id: "tab-02".into(),
+            title: "server-beta".into(),
+            host_address: "192.168.1.10".into(),
+            username: "root".into(),
+            status: "🟢 Connected".into(),
+            terminal: Terminal::new(80, 24, 100),
+            handle: None,
+            current_input_buffer: String::new(),
+            host_id: None,
+            host_config: None,
+        });
+
+        // Test on narrow/compressed window (e.g. w = 700.0)
+        let w = 700.0;
+        let h = 500.0;
+
+        // Hover on Tab 0 body (near middle of tab 0)
+        let (_, _) = app.update_hover(200.0, 15.0, w, h);
+        assert_eq!(app.hover, HoverTarget::HeaderTab(0));
+
+        // Hover on Tab 1 body (on tab name/title)
+        let (_, _) = app.update_hover(370.0, 15.0, w, h);
+        assert_eq!(app.hover, HoverTarget::HeaderTab(1));
+
+        // Hover on Settings button
+        let (_, _) = app.update_hover(w - 30.0, 15.0, w, h);
+        assert_eq!(app.hover, HoverTarget::HeaderSettingsBtn);
+    }
+
+    #[test]
+    fn test_split_banner_hit_testing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.tabs.push(SessionTab {
+            id: "tab-01".into(),
+            title: "server-left".into(),
+            host_address: "192.168.1.1".into(),
+            username: "root".into(),
+            status: "🟢 Connected".into(),
+            terminal: Terminal::new(80, 24, 100),
+            handle: None,
+            current_input_buffer: String::new(),
+            host_id: None,
+            host_config: None,
+        });
+        app.tabs.push(SessionTab {
+            id: "tab-split".into(),
+            title: "server-split".into(),
+            host_address: "10.0.0.1".into(),
+            username: "root".into(),
+            status: "🔴 Ошибка: Connection refused".into(),
+            terminal: Terminal::new(80, 24, 100),
+            handle: None,
+            current_input_buffer: String::new(),
+            host_id: None,
+            host_config: None,
+        });
+        app.active_tab = 0;
+        app.split_tab = Some(1);
+
+        let w = 1000.0;
+        let h = 600.0;
+
+        // Right panel starts around x = 240 + (1000 - 240)/2 + 2 = 622.0
+        // Test hovering near the right panel bottom banner close button
+        let banner_y = h - app.footer_height - 25.0;
+        let (_, _) = app.update_hover(w - 20.0, banner_y, w, h);
+        assert_eq!(app.hover, HoverTarget::TerminalCloseTab(1));
+
+        // Test hovering on reconnect button in right panel
+        let (_, _) = app.update_hover(w - 80.0, banner_y, w, h);
+        assert_eq!(app.hover, HoverTarget::TerminalReconnect(1));
+    }
+
+    #[test]
+    fn test_confirm_run_modal_hit_testing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.open_confirm_run_modal("rm -rf /var/log/*".into(), "Сниппет «Очистить логи»".into());
+        assert!(app.confirm_run_modal.is_some());
+
+        let w = 1000.0;
+        let h = 700.0;
+        let modal = app.confirm_run_modal.as_ref().unwrap();
+        let layout = modal.layout(w, h);
+
+        // Cancel button center
+        let (cx, cy, cw, ch) = layout.cancel_rect;
+        let (_, _) = app.update_hover(cx + cw / 2.0, cy + ch / 2.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ConfirmRunCancel);
+
+        // Copy button center
+        let (k_x, k_y, k_w, k_h) = layout.copy_rect;
+        let (_, _) = app.update_hover(k_x + k_w / 2.0, k_y + k_h / 2.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ConfirmRunCopy);
+
+        // Execute button center
+        let (ex, ey, ew, eh) = layout.exec_rect;
+        let (_, _) = app.update_hover(ex + ew / 2.0, ey + eh / 2.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ConfirmRunExecute);
+
+        // Outside buttons but inside modal
+        let (_, _) = app.update_hover(layout.modal_x + 10.0, layout.modal_y + 10.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ModalDialogBody);
     }
 }
