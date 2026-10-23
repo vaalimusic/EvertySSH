@@ -41,6 +41,7 @@ pub enum StyleId {
 pub struct UiRenderer {
     pub renderer: Rgba8Renderer,
     pub text_system: TextSystem,
+    pub mono_char_w: f64,
     sans_style: TextStyle,
     sans_bold: TextStyle,
     mono_style: TextStyle,
@@ -56,9 +57,19 @@ impl UiRenderer {
         let logo_loaded = Self::try_load_logo(&mut renderer);
         Self::register_vector_icons(&mut renderer);
 
+        let mut text_system = TextSystem::new();
+        let mono_style = TextStyle {
+            family: FontFamily::Monospace,
+            weight: FontWeight::Regular,
+            font_size: LogicalPx(13.0),
+            line_height: LogicalPx(18.0),
+        };
+        let mono_char_w = text_system.shape("M", &mono_style, None).metrics.size.width.0;
+
         Self {
             renderer,
-            text_system: TextSystem::new(),
+            text_system,
+            mono_char_w,
             sans_style: TextStyle {
                 family: FontFamily::SansSerif,
                 weight: FontWeight::Regular,
@@ -353,7 +364,7 @@ impl UiRenderer {
         let term_w = term_rect.size.width.0;
         let term_h = term_rect.size.height.0;
 
-        let char_w = 8.2;
+        let char_w = self.mono_char_w;
         let line_h = 18.0;
 
         // 1. Diagnostics Toolbar (if connected)
@@ -578,16 +589,18 @@ impl UiRenderer {
             }
         }
 
-        // Draw Cursor
+        // Draw Cursor (blinking vertical bar)
         let (cur_x, cur_y) = tab.terminal.cursor_pos();
         if is_active_panel && tab.terminal.screen.cursor_visible && app.caret_visible && cur_y < max_visible_rows {
+            let cursor_x = pad_x + (cur_x as f64) * char_w;
+            let cursor_y = pad_y + (cur_y as f64) * line_h;
             let cursor_rect = LogicalRect::from_xywh(
-                pad_x + (cur_x as f64) * char_w,
-                pad_y + (cur_y as f64) * line_h,
-                char_w,
-                line_h,
+                cursor_x,
+                cursor_y + 1.0,
+                2.0,
+                line_h - 2.0,
             );
-            builder.fill_rect(cursor_rect, Color::rgba(45, 212, 191, 200), 1.0);
+            builder.fill_rect(cursor_rect, Color::rgba(45, 212, 191, 230), 1.0);
         }
 
         // 3. Reconnect Banner at bottom (if disconnected)

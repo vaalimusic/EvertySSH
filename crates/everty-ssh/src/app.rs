@@ -1124,6 +1124,9 @@ pub struct AppState {
     pub tokio_handle: tokio::runtime::Handle,
 }
 
+pub const TERMINAL_CHAR_WIDTH: f64 = 7.6171875;
+pub const TERMINAL_LINE_HEIGHT: f64 = 18.0;
+
 impl AppState {
     pub fn new(tokio_handle: tokio::runtime::Handle) -> Self {
         let hosts_doc = load_hosts().unwrap_or_default();
@@ -1199,8 +1202,8 @@ impl AppState {
     pub fn resize_terminals(&mut self, logical_w: f64, logical_h: f64) {
         let term_w = (logical_w - self.sidebar_width).max(0.0);
         let term_h = (logical_h - self.header_height - self.footer_height).max(0.0);
-        let cols = ((term_w - 24.0) / 8.2).floor().max(20.0) as usize;
-        let rows = ((term_h - 20.0) / 18.0).floor().max(5.0) as usize;
+        let cols = ((term_w - 24.0) / TERMINAL_CHAR_WIDTH).floor().max(20.0) as usize;
+        let rows = ((term_h - 20.0) / TERMINAL_LINE_HEIGHT).floor().max(5.0) as usize;
 
         if self.terminal_cols != cols || self.terminal_rows != rows {
             self.terminal_cols = cols;
@@ -2222,8 +2225,8 @@ impl AppState {
 
         let pad_x = self.sidebar_width + 10.0;
         let pad_y = self.header_height + bar_h + 6.0;
-        let char_w = 8.2;
-        let line_h = 18.0;
+        let char_w = TERMINAL_CHAR_WIDTH;
+        let line_h = TERMINAL_LINE_HEIGHT;
 
         if !self.is_mouse_selecting && (x < pad_x || y < pad_y) {
             return None;
@@ -4207,6 +4210,19 @@ mod tests {
         assert!(sel.contains(10, 3)); // up to col 10
         assert!(!sel.contains(11, 3)); // beyond col 10 on last line
         assert!(!sel.contains(5, 4));  // next line
+    }
+
+    #[test]
+    fn test_mono_metrics() {
+        let mut sys = everty_ui::TextSystem::new();
+        let mono_style = everty_ui::TextStyle {
+            family: everty_ui::FontFamily::Monospace,
+            weight: everty_ui::FontWeight::Regular,
+            font_size: everty_ui::LogicalPx(13.0),
+            line_height: everty_ui::LogicalPx(18.0),
+        };
+        let l1 = sys.shape("a", &mono_style, None);
+        assert!((l1.metrics.size.width.0 - TERMINAL_CHAR_WIDTH).abs() < 0.001);
     }
 
     #[test]
