@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -690,16 +692,13 @@ impl ApplicationHandler for EvertySshApp {
 
         let window = Arc::new(event_loop.create_window(attr).expect("Failed to create window"));
 
-        // Set sharp window icon from Logo.png
-        let candidates = ["Logo.png", "logo.png", "../../Logo.png", "../Logo.png", "crates/everty-ssh/Logo.png"];
-        for p in candidates {
-            if let Ok(img) = image::open(p) {
-                let resized = image::imageops::resize(&img, 64, 64, image::imageops::FilterType::Lanczos3);
-                let (w, h) = resized.dimensions();
-                if let Ok(icon) = winit::window::Icon::from_rgba(resized.into_raw(), w, h) {
-                    window.set_window_icon(Some(icon));
-                    break;
-                }
+        // Set sharp window icon from embedded Logo.png
+        const LOGO_BYTES: &[u8] = include_bytes!("../Logo.png");
+        if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
+            let resized = image::imageops::resize(&img, 64, 64, image::imageops::FilterType::Lanczos3);
+            let (w, h) = resized.dimensions();
+            if let Ok(icon) = winit::window::Icon::from_rgba(resized.into_raw(), w, h) {
+                window.set_window_icon(Some(icon));
             }
         }
 

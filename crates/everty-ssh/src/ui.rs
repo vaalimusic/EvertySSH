@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use everty_ui::{
     BitmapIcon, Color, DpiScale, FontFamily, FontWeight, IconId, LogicalPoint, LogicalPx,
@@ -665,41 +664,30 @@ impl UiRenderer {
     }
 
     fn try_load_logo(renderer: &mut Rgba8Renderer) -> bool {
-        let candidates = [
-            "Logo.png",
-            "logo.png",
-            "../../Logo.png",
-            "../Logo.png",
-            "crates/everty-ssh/Logo.png",
-        ];
+        const LOGO_BYTES: &[u8] = include_bytes!("../Logo.png");
+        if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
+            // Pre-downscale using Lanczos3 to avoid bilinear aliasing/blurriness:
+            // 1. Medium size (144x144) for Welcome Screen (72x72 @ 2x DPI)
+            let large = image::imageops::resize(&img, 144, 144, image::imageops::FilterType::Lanczos3);
+            let (lw, lh) = large.dimensions();
+            let large_icon = BitmapIcon {
+                width: lw,
+                height: lh,
+                rgba: Arc::from(large.into_raw().into_boxed_slice()),
+            };
+            let _ = renderer.register_icon(LOGO_ICON_ID, large_icon);
 
-        for path in candidates {
-            if Path::new(path).exists() {
-                if let Ok(img) = image::open(path) {
-                    // Pre-downscale using Lanczos3 to avoid bilinear aliasing/blurriness:
-                    // 1. Medium size (144x144) for Welcome Screen (72x72 @ 2x DPI)
-                    let large = image::imageops::resize(&img, 144, 144, image::imageops::FilterType::Lanczos3);
-                    let (lw, lh) = large.dimensions();
-                    let large_icon = BitmapIcon {
-                        width: lw,
-                        height: lh,
-                        rgba: Arc::from(large.into_raw().into_boxed_slice()),
-                    };
-                    let _ = renderer.register_icon(LOGO_ICON_ID, large_icon);
+            // 2. Small size (52x52) for Header Logo (26x26 @ 2x DPI)
+            let small = image::imageops::resize(&img, 52, 52, image::imageops::FilterType::Lanczos3);
+            let (sw, sh) = small.dimensions();
+            let small_icon = BitmapIcon {
+                width: sw,
+                height: sh,
+                rgba: Arc::from(small.into_raw().into_boxed_slice()),
+            };
+            let _ = renderer.register_icon(LOGO_SMALL_ICON_ID, small_icon);
 
-                    // 2. Small size (52x52) for Header Logo (26x26 @ 2x DPI)
-                    let small = image::imageops::resize(&img, 52, 52, image::imageops::FilterType::Lanczos3);
-                    let (sw, sh) = small.dimensions();
-                    let small_icon = BitmapIcon {
-                        width: sw,
-                        height: sh,
-                        rgba: Arc::from(small.into_raw().into_boxed_slice()),
-                    };
-                    let _ = renderer.register_icon(LOGO_SMALL_ICON_ID, small_icon);
-
-                    return true;
-                }
-            }
+            return true;
         }
         false
     }

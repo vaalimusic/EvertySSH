@@ -28,3 +28,6 @@ arboard = "3"
 rfd = "0.15"
 sha2 = "0.10"
 serde_json = "1.0"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
