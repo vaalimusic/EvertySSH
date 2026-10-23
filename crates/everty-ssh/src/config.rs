@@ -60,6 +60,23 @@ pub struct HostsDocument {
     pub hosts: Vec<HostConfig>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppLanguage {
+    #[default]
+    Ru,
+    En,
+}
+
+impl AppLanguage {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Ru => Self::En,
+            Self::En => Self::Ru,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalSettings {
     #[serde(default = "default_font_size")]
@@ -74,6 +91,8 @@ pub struct GlobalSettings {
     pub confirm_delete: bool,
     #[serde(default = "default_user")]
     pub default_user: String,
+    #[serde(default)]
+    pub language: AppLanguage,
 }
 
 impl Default for GlobalSettings {
@@ -85,6 +104,7 @@ impl Default for GlobalSettings {
             master_password_hash: None,
             confirm_delete: true,
             default_user: "root".to_string(),
+            language: AppLanguage::Ru,
         }
     }
 }

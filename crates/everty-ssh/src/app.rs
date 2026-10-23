@@ -4,10 +4,11 @@ use crossbeam_channel::{Receiver, Sender};
 use winit::window::CursorIcon;
 
 use crate::config::{
-    hash_password, load_hosts, save_hosts, verify_password, AuthConfig, ExportBundle, HostConfig,
-    HostsDocument,
+    hash_password, load_hosts, save_hosts, verify_password, AppLanguage, AuthConfig, ExportBundle,
+    HostConfig, HostsDocument,
 };
 use crate::db::{CommandRecord, HistoryDb, SessionRecord, SnippetRecord};
+use crate::i18n::tr;
 use crate::ssh::{connect_ssh, SshSessionHandle};
 use crate::terminal::Terminal;
 
@@ -654,6 +655,8 @@ pub enum HoverTarget {
     ModalSnippetClose,
     // Settings & Security
     HeaderSettingsBtn,
+    HeaderLangBtn,
+    SettingsSetLanguage(crate::config::AppLanguage),
     ConfirmDeleteConfirm,
     ConfirmDeleteCancel,
     SettingsClose,
@@ -1045,7 +1048,7 @@ impl AppState {
                 else {
                     match settings.active_tab {
                         SettingsTab::Security => {
-                            let f_y_base = modal_y + 110.0;
+                            let f_y_base = modal_y + 155.0;
                             let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
                             let start_field = if has_existing { 0 } else { 1 };
                             let end_field = 3;
@@ -1092,18 +1095,29 @@ impl AppState {
                             }
                         }
                         SettingsTab::General => {
-                            let mut cy = modal_y + 110.0;
+                            let lang_y = modal_y + 105.0;
+                            if y >= lang_y && y <= lang_y + 30.0 {
+                                if x >= modal_x + 240.0 && x <= modal_x + 340.0 {
+                                    new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::Ru);
+                                    cursor = CursorIcon::Pointer;
+                                } else if x >= modal_x + 350.0 && x <= modal_x + 450.0 {
+                                    new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::En);
+                                    cursor = CursorIcon::Pointer;
+                                }
+                            }
+
+                            let mut cy = modal_y + 150.0;
                             for f_idx in 0..2 {
                                 if x >= modal_x + 240.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
                                     new_hover = HoverTarget::SettingsGeneralField(f_idx);
                                     cursor = CursorIcon::Text;
                                     break;
                                 }
-                                cy += 48.0;
+                                cy += 45.0;
                             }
                             if new_hover == HoverTarget::None {
                                 // Checkbox confirm delete
-                                if x >= modal_x + 30.0 && x <= modal_x + 360.0 && y >= cy && y <= cy + 28.0 {
+                                if x >= modal_x + 24.0 && x <= modal_x + 420.0 && y >= cy && y <= cy + 28.0 {
                                     new_hover = HoverTarget::SettingsToggleConfirmDelete;
                                     cursor = CursorIcon::Pointer;
                                 }
@@ -1429,7 +1443,10 @@ impl AppState {
             if x >= w - 46.0 && x <= w - 14.0 {
                 new_hover = HoverTarget::HeaderSettingsBtn;
                 cursor = CursorIcon::Pointer;
-            } else if x >= w - 46.0 - 160.0 - 8.0 && x < w - 46.0 {
+            } else if x >= w - 94.0 && x <= w - 52.0 {
+                new_hover = HoverTarget::HeaderLangBtn;
+                cursor = CursorIcon::Pointer;
+            } else if x >= w - 94.0 - 160.0 - 6.0 && x < w - 94.0 {
                 new_hover = HoverTarget::HeaderSearchBtn;
                 cursor = CursorIcon::Pointer;
             } else {
@@ -1747,7 +1764,7 @@ impl AppState {
 
         if changed {
             if new_hover != HoverTarget::None {
-                if let Some(text) = Self::get_hover_tooltip_text(new_hover) {
+                if let Some(text) = self.get_hover_tooltip_text(new_hover) {
                     self.tooltip = Some(TooltipState {
                         text: text.to_string(),
                         x: (x + 12.0).min(w - 240.0),
@@ -2207,13 +2224,15 @@ impl AppState {
         let default_user = self.hosts_doc.settings.default_user.clone();
         let scrollback = self.hosts_doc.settings.scrollback_lines.to_string();
         let confirm_delete = self.hosts_doc.settings.confirm_delete;
+        let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
+        let init_sec_field = if has_existing { 0 } else { 1 };
         self.settings_modal = Some(SettingsModal {
             is_open: true,
             active_tab: SettingsTab::Security,
             current_password: TextInput::default(),
             new_password: TextInput::default(),
             confirm_password: TextInput::default(),
-            active_security_field: 0,
+            active_security_field: init_sec_field,
             security_msg: None,
             backup_msg: None,
             default_user: TextInput::new(default_user),
@@ -2222,7 +2241,18 @@ impl AppState {
             active_general_field: 0,
             general_msg: None,
         });
-        self.focused_input = Some(InputFieldId::SettingsSecurity(0));
+        self.focused_input = Some(InputFieldId::SettingsSecurity(init_sec_field));
+    }
+
+    pub fn toggle_language(&mut self) {
+        let new_lang = self.hosts_doc.settings.language.toggle();
+        self.hosts_doc.settings.language = new_lang;
+        let _ = save_hosts(&self.hosts_doc);
+    }
+
+    pub fn set_language(&mut self, lang: crate::config::AppLanguage) {
+        self.hosts_doc.settings.language = lang;
+        let _ = save_hosts(&self.hosts_doc);
     }
 
     pub fn save_master_password(&mut self) {
@@ -3065,60 +3095,64 @@ impl AppState {
         }
     }
 
-    pub fn get_hover_tooltip_text(target: HoverTarget) -> Option<&'static str> {
+    pub fn get_hover_tooltip_text(&self, target: HoverTarget) -> Option<&'static str> {
+        let lang = self.hosts_doc.settings.language;
         match target {
-            HoverTarget::HeaderAddBtn => Some("Добавить новый хост (Ctrl+N)"),
-            HoverTarget::HeaderSearchBtn => Some("Поиск по истории команд (Ctrl+R)"),
-            HoverTarget::SidebarSplitter => Some("Потяните мышью для изменения ширины панели"),
-            HoverTarget::SidebarAddHostBtn => Some("Добавить новый сервер"),
-            HoverTarget::SidebarAddSnippetBtn => Some("Создать новый сниппет"),
-            HoverTarget::HostDeployKey(_) => Some("Сгенерировать и установить SSH ключ на сервер"),
-            HoverTarget::HostConnect(_) => Some("Подключиться к серверу"),
-            HoverTarget::HostEdit(_) => Some("Редактировать параметры сервера"),
-            HoverTarget::HostDelete(_) => Some("Удалить сервер из списка"),
-            HoverTarget::SessionCard(_) => Some("Открыть подробный дашборд сессии и журнал команд"),
-            HoverTarget::SessionDashboardReconnect => Some("Переподключиться к серверу в новой вкладке"),
-            HoverTarget::SessionDashboardDelete => Some("Удалить эту сессию из истории"),
-            HoverTarget::SessionDashboardRunCmd(_) => Some("Запустить команду в активной консоли"),
-            HoverTarget::SessionDashboardCopyCmd(_) => Some("Скопировать команду в буфер"),
-            HoverTarget::SnippetRun(_) => Some("Запустить сниппет в активном терминале"),
-            HoverTarget::SnippetCopy(_) => Some("Скопировать текст сниппета"),
-            HoverTarget::SnippetDelete(_) => Some("Удалить сниппет"),
-            HoverTarget::KeyToolGenerateBtn => Some("Сгенерировать ключевую пару OpenSSH"),
-            HoverTarget::KeyToolSendTermBtn => Some("Отправить ключ и настроить authorized_keys"),
-            HoverTarget::KeyToolBindHostBtn => Some("Привязать ключ к профилю сервера"),
-            HoverTarget::KeyToolCopyPubBtn => Some("Скопировать публичный ключ"),
-            HoverTarget::ModalBrowseKey => Some("Выбрать файл ключа через проводник"),
-            HoverTarget::ModalGenerateKey => Some("Сгенерировать новый SSH ключ"),
-            HoverTarget::SidebarSearchHost => Some("Поиск серверов по имени, адресу, логину или группе (Esc для сброса)"),
-            HoverTarget::SidebarSearchSnippet => Some("Поиск сохраненных сниппетов (Esc для сброса)"),
-            HoverTarget::SidebarSearchCommand => Some("Поиск в истории команд"),
-            HoverTarget::HeaderSettingsBtn => Some("Настройки: мастер-пароль, резервная копия, параметры"),
-            HoverTarget::ConfirmDeleteConfirm => Some("Подтвердить безвозвратное удаление сервера"),
-            HoverTarget::ConfirmDeleteCancel => Some("Отменить удаление сервера (Esc)"),
-            HoverTarget::SettingsClose => Some("Закрыть настройки (Esc)"),
-            HoverTarget::SettingsSavePassword => Some("Сохранить настройки мастер-пароля"),
-            HoverTarget::SettingsRemovePassword => Some("Отключить защиту паролем"),
-            HoverTarget::SettingsExportJson => Some("Экспортировать серверы и настройки в JSON файл"),
-            HoverTarget::SettingsImportJson => Some("Импортировать серверы из файла резервной копии"),
-            HoverTarget::SettingsSaveGeneral => Some("Сохранить общие настройки"),
-            HoverTarget::SettingsToggleConfirmDelete => Some("Включить/выключить подтверждение удаления"),
-            HoverTarget::LockUnlockBtn => Some("Разблокировать приложение (Enter)"),
-            HoverTarget::ConfirmRunExecute => Some("Выполнить команду в консоли (Enter)"),
-            HoverTarget::ConfirmRunCancel => Some("Отменить запуск команды (Esc)"),
-            HoverTarget::ConfirmRunCopy => Some("Скопировать текст команды в буфер"),
-            HoverTarget::TerminalReconnect => Some("Повторно подключиться к серверу в этой вкладке"),
-            HoverTarget::TerminalCloseTab => Some("Закрыть эту вкладку терминала"),
+            HoverTarget::HeaderAddBtn => Some(tr(lang, "Добавить новый хост (Ctrl+N)", "Add new host (Ctrl+N)")),
+            HoverTarget::HeaderSearchBtn => Some(tr(lang, "Поиск по истории команд (Ctrl+R)", "Search command history (Ctrl+R)")),
+            HoverTarget::HeaderLangBtn => Some(tr(lang, "Переключить язык (RU/EN)", "Switch language (RU/EN)")),
+            HoverTarget::HeaderSettingsBtn => Some(tr(lang, "Настройки: мастер-пароль, язык, бэкап", "Settings: master password, language, backup")),
+            HoverTarget::SidebarSplitter => Some(tr(lang, "Потяните мышью для изменения ширины панели", "Drag to resize sidebar")),
+            HoverTarget::SidebarAddHostBtn => Some(tr(lang, "Добавить новый сервер", "Add new server")),
+            HoverTarget::SidebarAddSnippetBtn => Some(tr(lang, "Создать новый сниппет", "Create new snippet")),
+            HoverTarget::HostDeployKey(_) => Some(tr(lang, "Сгенерировать и установить SSH ключ на сервер", "Generate & deploy SSH key to server")),
+            HoverTarget::HostConnect(_) => Some(tr(lang, "Подключиться к серверу", "Connect to server")),
+            HoverTarget::HostEdit(_) => Some(tr(lang, "Редактировать параметры сервера", "Edit server configuration")),
+            HoverTarget::HostDelete(_) => Some(tr(lang, "Удалить сервер из списка", "Delete server from list")),
+            HoverTarget::SessionCard(_) => Some(tr(lang, "Открыть подробный дашборд сессии и журнал команд", "Open session dashboard & command log")),
+            HoverTarget::SessionDashboardReconnect => Some(tr(lang, "Переподключиться к серверу в новой вкладке", "Reconnect to server in new tab")),
+            HoverTarget::SessionDashboardDelete => Some(tr(lang, "Удалить эту сессию из истории", "Delete this session from history")),
+            HoverTarget::SessionDashboardRunCmd(_) => Some(tr(lang, "Запустить команду в активной консоли", "Run command in active terminal")),
+            HoverTarget::SessionDashboardCopyCmd(_) => Some(tr(lang, "Скопировать команду в буфер", "Copy command to clipboard")),
+            HoverTarget::SnippetRun(_) => Some(tr(lang, "Запустить сниппет в активном терминале", "Run snippet in active terminal")),
+            HoverTarget::SnippetCopy(_) => Some(tr(lang, "Скопировать текст сниппета", "Copy snippet text")),
+            HoverTarget::SnippetDelete(_) => Some(tr(lang, "Удалить сниппет", "Delete snippet")),
+            HoverTarget::KeyToolGenerateBtn => Some(tr(lang, "Сгенерировать ключевую пару OpenSSH", "Generate OpenSSH key pair")),
+            HoverTarget::KeyToolSendTermBtn => Some(tr(lang, "Отправить ключ и настроить authorized_keys", "Deploy key to authorized_keys")),
+            HoverTarget::KeyToolBindHostBtn => Some(tr(lang, "Привязать ключ к профилю сервера", "Attach key to server profile")),
+            HoverTarget::KeyToolCopyPubBtn => Some(tr(lang, "Скопировать публичный ключ", "Copy public key")),
+            HoverTarget::ModalBrowseKey => Some(tr(lang, "Выбрать файл ключа через проводник", "Browse key file via explorer")),
+            HoverTarget::ModalGenerateKey => Some(tr(lang, "Сгенерировать новый SSH ключ", "Generate new SSH key")),
+            HoverTarget::SidebarSearchHost => Some(tr(lang, "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)", "Search servers by name, host, user or group (Esc to clear)")),
+            HoverTarget::SidebarSearchSnippet => Some(tr(lang, "Поиск сохраненных сниппетов (Esc для сброса)", "Search saved snippets (Esc to clear)")),
+            HoverTarget::SidebarSearchCommand => Some(tr(lang, "Поиск в истории команд", "Search command history")),
+            HoverTarget::ConfirmDeleteConfirm => Some(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
+            HoverTarget::ConfirmDeleteCancel => Some(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
+            HoverTarget::SettingsClose => Some(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
+            HoverTarget::SettingsSavePassword => Some(tr(lang, "Сохранить настройки мастер-пароля", "Save master password settings")),
+            HoverTarget::SettingsRemovePassword => Some(tr(lang, "Отключить защиту паролем", "Disable password protection")),
+            HoverTarget::SettingsExportJson => Some(tr(lang, "Экспортировать серверы и настройки в JSON файл", "Export servers & settings to JSON")),
+            HoverTarget::SettingsImportJson => Some(tr(lang, "Импортировать серверы из файла резервной копии", "Import servers from JSON backup")),
+            HoverTarget::SettingsSaveGeneral => Some(tr(lang, "Сохранить общие настройки", "Save general settings")),
+            HoverTarget::SettingsToggleConfirmDelete => Some(tr(lang, "Включить/выключить подтверждение удаления", "Toggle delete confirmation dialog")),
+            HoverTarget::SettingsSetLanguage(AppLanguage::Ru) => Some("Переключить интерфейс на Русский язык"),
+            HoverTarget::SettingsSetLanguage(AppLanguage::En) => Some("Switch interface to English language"),
+            HoverTarget::LockUnlockBtn => Some(tr(lang, "Разблокировать приложение (Enter)", "Unlock application (Enter)")),
+            HoverTarget::ConfirmRunExecute => Some(tr(lang, "Выполнить команду в консоли (Enter)", "Execute command in terminal (Enter)")),
+            HoverTarget::ConfirmRunCancel => Some(tr(lang, "Отменить запуск команды (Esc)", "Cancel command execution (Esc)")),
+            HoverTarget::ConfirmRunCopy => Some(tr(lang, "Скопировать текст команды в буфер", "Copy command text")),
+            HoverTarget::TerminalReconnect => Some(tr(lang, "Повторно подключиться к серверу в этой вкладке", "Reconnect session in this tab")),
+            HoverTarget::TerminalCloseTab => Some(tr(lang, "Закрыть эту вкладку терминала", "Close this terminal tab")),
             HoverTarget::QuickAction(cmd) => Some(cmd.tooltip()),
-            HoverTarget::TerminalSearchOpenBtn => Some("Поиск текста в консоли (Ctrl+F)"),
-            HoverTarget::TerminalSearchCloseBtn => Some("Закрыть поиск (Esc)"),
-            HoverTarget::TerminalSearchPrevBtn => Some("Предыдущее совпадение (Shift+Enter)"),
-            HoverTarget::TerminalSearchNextBtn => Some("Следующее совпадение (Enter)"),
-            HoverTarget::TerminalSearchCaseToggle => Some("Учитывать регистр символов (Aa)"),
-            HoverTarget::TerminalSearchInput => Some("Поле поиска текста в терминале"),
-            HoverTarget::TerminalSplitBtn => Some("Разделить экран терминала (Ctrl+Alt+S)"),
-            HoverTarget::TerminalSplitClose => Some("Закрыть разделение терминала"),
-            HoverTarget::SplitTerminalArea => Some("Активировать этот терминал"),
+            HoverTarget::TerminalSearchOpenBtn => Some(tr(lang, "Поиск текста в консоли (Ctrl+F)", "Search text in terminal (Ctrl+F)")),
+            HoverTarget::TerminalSearchCloseBtn => Some(tr(lang, "Закрыть поиск (Esc)", "Close search (Esc)")),
+            HoverTarget::TerminalSearchPrevBtn => Some(tr(lang, "Предыдущее совпадение (Shift+Enter)", "Previous match (Shift+Enter)")),
+            HoverTarget::TerminalSearchNextBtn => Some(tr(lang, "Следующее совпадение (Enter)", "Next match (Enter)")),
+            HoverTarget::TerminalSearchCaseToggle => Some(tr(lang, "Учитывать регистр символов (Aa)", "Match case (Aa)")),
+            HoverTarget::TerminalSearchInput => Some(tr(lang, "Поле поиска текста в терминале", "Terminal search input")),
+            HoverTarget::TerminalSplitBtn => Some(tr(lang, "Разделить экран терминала (Ctrl+Alt+S)", "Split terminal screen (Ctrl+Alt+S)")),
+            HoverTarget::TerminalSplitClose => Some(tr(lang, "Закрыть разделение терминала", "Close terminal split")),
+            HoverTarget::SplitTerminalArea => Some(tr(lang, "Активировать этот терминал", "Activate this terminal")),
             _ => None,
         }
     }

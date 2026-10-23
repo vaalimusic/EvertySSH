@@ -15,6 +15,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 pub mod app;
 pub mod config;
 pub mod db;
+pub mod i18n;
 pub mod ssh;
 pub mod terminal;
 pub mod ui;
@@ -364,6 +365,14 @@ impl EvertySshApp {
             }
             HoverTarget::HeaderSettingsBtn => {
                 self.state.open_settings_modal();
+                self.request_redraw();
+            }
+            HoverTarget::HeaderLangBtn => {
+                self.state.toggle_language();
+                self.request_redraw();
+            }
+            HoverTarget::SettingsSetLanguage(lang) => {
+                self.state.set_language(lang);
                 self.request_redraw();
             }
             HoverTarget::SettingsClose => {

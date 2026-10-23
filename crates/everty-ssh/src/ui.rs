@@ -6,6 +6,8 @@ use everty_ui::{
 };
 
 use crate::app::{AppState, AuthModeChoice, ContextMenuItem, HoverTarget, InputFieldId, InputMenuAction, KeyAlgo, QuickActionCmd, SessionTab, SettingsTab, SidebarTab, TextInput};
+use crate::config::AppLanguage;
+use crate::i18n::tr;
 use crate::terminal::{DEFAULT_TERM_BG, DEFAULT_TERM_FG};
 
 const LOGO_ICON_ID: IconId = IconId(1);
@@ -779,6 +781,7 @@ impl UiRenderer {
 
         let accent_mint = Color::rgba(45, 212, 191, 255);
         let accent_emerald = Color::rgba(52, 211, 153, 255);
+        let lang = app.hosts_doc.settings.language;
 
         // 1. App Background
         builder.fill_rect(
@@ -891,17 +894,18 @@ impl UiRenderer {
         let is_add_hovered = app.hover == HoverTarget::HeaderAddBtn;
         let add_btn_w = 125.0;
         let add_btn_rect = LogicalRect::from_xywh(tab_x, 7.0, add_btn_w, 30.0);
+        let add_label_text = tr(lang, "Добавить", "Add Server");
 
         if is_add_hovered {
             builder.fill_rect(add_btn_rect, accent_mint, 5.0);
             builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 12.0, 15.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-            let add_label = self.shape_cached("Добавить", StyleId::SansBold, None);
+            let add_label = self.shape_cached(add_label_text, StyleId::SansBold, None);
             builder.text(LogicalPoint::new(tab_x + 32.0, 13.0), add_label, Color::rgba(9, 14, 26, 255));
         } else {
             builder.fill_rect(add_btn_rect, Color::rgba(20, 36, 60, 255), 5.0);
             builder.stroke_rect(add_btn_rect, accent_mint, 1.0, 5.0);
             builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(tab_x + 12.0, 15.0, 14.0, 14.0), accent_mint);
-            let add_label = self.shape_cached("Добавить", StyleId::SansBold, None);
+            let add_label = self.shape_cached(add_label_text, StyleId::SansBold, None);
             builder.text(LogicalPoint::new(tab_x + 32.0, 13.0), add_label, accent_mint);
         }
 
@@ -925,10 +929,34 @@ impl UiRenderer {
             if is_settings_hovered { accent_mint } else { text_dim },
         );
 
+        // Language Switcher Button in Header (RU / EN)
+        let is_lang_hovered = app.hover == HoverTarget::HeaderLangBtn;
+        let lang_btn_w = 42.0;
+        let lang_btn_x = w - 94.0;
+        let lang_btn_rect = LogicalRect::from_xywh(lang_btn_x, 7.0, lang_btn_w, 30.0);
+        builder.fill_rect(
+            lang_btn_rect,
+            if is_lang_hovered { Color::rgba(25, 41, 72, 255) } else { Color::rgba(18, 29, 52, 255) },
+            5.0,
+        );
+        builder.stroke_rect(
+            lang_btn_rect,
+            if is_lang_hovered { accent_mint } else { card_border },
+            1.0,
+            5.0,
+        );
+        let lang_str = match lang { AppLanguage::Ru => "RU", AppLanguage::En => "EN" };
+        let lang_l = self.shape_cached(lang_str, StyleId::SansBold, None);
+        builder.text(
+            LogicalPoint::new(lang_btn_x + 11.0, 13.0),
+            lang_l,
+            if is_lang_hovered { accent_mint } else { text_main },
+        );
+
         // Search Button on right header (with Hover)
         let is_search_hovered = app.hover == HoverTarget::HeaderSearchBtn;
         let search_btn_w = 160.0;
-        let search_btn_x = w - 46.0 - search_btn_w - 8.0;
+        let search_btn_x = lang_btn_x - search_btn_w - 6.0;
         let search_btn_rect = LogicalRect::from_xywh(search_btn_x, 7.0, search_btn_w, 30.0);
 
         builder.fill_rect(
@@ -947,7 +975,8 @@ impl UiRenderer {
             LogicalRect::from_xywh(search_btn_x + 12.0, 15.0, 14.0, 14.0),
             if is_search_hovered { accent_mint } else { text_dim },
         );
-        let search_hint = self.shape_cached("Ctrl+R Команды", StyleId::Small, None);
+        let search_hint_text = tr(lang, "Ctrl+R Команды", "Ctrl+R Commands");
+        let search_hint = self.shape_cached(search_hint_text, StyleId::Small, None);
         builder.text(LogicalPoint::new(search_btn_x + 32.0, 14.0), search_hint, if is_search_hovered { text_main } else { text_dim });
 
         // 3. Sidebar (Left Pane)
@@ -974,10 +1003,10 @@ impl UiRenderer {
         let nav_h = 38.0;
         let nav_btn_w = sidebar_w / 4.0;
         let nav_items = [
-            (SidebarTab::Hosts, "Серверы"),
-            (SidebarTab::Sessions, "Сессии"),
-            (SidebarTab::Commands, "История"),
-            (SidebarTab::Snippets, "Сниппеты"),
+            (SidebarTab::Hosts, tr(lang, "Серверы", "Hosts")),
+            (SidebarTab::Sessions, tr(lang, "Сессии", "Sessions")),
+            (SidebarTab::Commands, tr(lang, "История", "History")),
+            (SidebarTab::Snippets, tr(lang, "Сниппеты", "Snippets")),
         ];
 
         for (i, (tab_kind, label)) in nav_items.iter().enumerate() {
@@ -1019,7 +1048,7 @@ impl UiRenderer {
                     search_rect,
                     is_search_focused,
                     is_search_hover,
-                    "Поиск...",
+                    tr(lang, "Поиск...", "Search..."),
                     false,
                     app.caret_visible && is_search_focused,
                     accent_mint,
@@ -1030,17 +1059,18 @@ impl UiRenderer {
 
                 let is_add_host_btn_hover = app.hover == HoverTarget::SidebarAddHostBtn;
                 let add_btn_rect = LogicalRect::from_xywh(sidebar_w - 82.0, content_y_start, 72.0, 32.0);
+                let btn_text_str = tr(lang, "Новый", "+ New");
 
                 if is_add_host_btn_hover {
                     builder.fill_rect(add_btn_rect, accent_mint, 5.0);
                     builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(sidebar_w - 76.0, content_y_start + 9.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-                    let btn_text = self.shape_cached("Новый", StyleId::Small, None);
+                    let btn_text = self.shape_cached(btn_text_str, StyleId::Small, None);
                     builder.text(LogicalPoint::new(sidebar_w - 58.0, content_y_start + 7.0), btn_text, Color::rgba(9, 14, 26, 255));
                 } else {
                     builder.fill_rect(add_btn_rect, Color::rgba(22, 38, 70, 200), 5.0);
                     builder.stroke_rect(add_btn_rect, accent_mint, 1.0, 5.0);
                     builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(sidebar_w - 76.0, content_y_start + 9.0, 14.0, 14.0), accent_mint);
-                    let btn_text = self.shape_cached("Новый", StyleId::Small, None);
+                    let btn_text = self.shape_cached(btn_text_str, StyleId::Small, None);
                     builder.text(LogicalPoint::new(sidebar_w - 58.0, content_y_start + 7.0), btn_text, accent_mint);
                 }
 
@@ -1048,17 +1078,17 @@ impl UiRenderer {
                 if filtered.is_empty() {
                     let empty_y = content_y_start + 50.0;
                     let msg = if app.hosts_doc.hosts.is_empty() {
-                        "Нет серверов"
+                        tr(lang, "Нет серверов", "No servers")
                     } else {
-                        "Не найдено"
+                        tr(lang, "Не найдено", "Not found")
                     };
                     let empty_text = self.shape_cached(msg, StyleId::SansBold, None);
                     builder.text(LogicalPoint::new(20.0, empty_y), empty_text, text_muted);
 
                     let sub_msg = if app.hosts_doc.hosts.is_empty() {
-                        "Нажмите '+ Новый' чтобы добавить"
+                        tr(lang, "Нажмите '+ Новый' чтобы добавить", "Click '+ New' to add a host")
                     } else {
-                        "Попробуйте другой запрос"
+                        tr(lang, "Попробуйте другой запрос", "Try a different search query")
                     };
                     let sub_text = self.shape_cached(sub_msg, StyleId::Small, None);
                     builder.text(LogicalPoint::new(20.0, empty_y + 22.0), sub_text, text_dim);
@@ -1221,7 +1251,7 @@ impl UiRenderer {
                     search_box_rect,
                     is_cmd_focused,
                     is_cmd_hover,
-                    "Поиск команд...",
+                    tr(lang, "Поиск команд...", "Search commands..."),
                     false,
                     app.caret_visible && is_cmd_focused,
                     accent_mint,
@@ -1269,7 +1299,7 @@ impl UiRenderer {
                     search_rect,
                     is_snip_focused,
                     is_snip_hover,
-                    "Поиск сниппетов...",
+                    tr(lang, "Поиск сниппетов...", "Search snippets..."),
                     false,
                     app.caret_visible && is_snip_focused,
                     accent_mint,
@@ -1280,16 +1310,17 @@ impl UiRenderer {
 
                 let is_add_h = app.hover == HoverTarget::SidebarAddSnippetBtn;
                 let add_btn_rect = LogicalRect::from_xywh(sidebar_w - 82.0, content_y_start, 72.0, 32.0);
+                let add_snip_label = tr(lang, "Создать", "+ Create");
                 if is_add_h {
                     builder.fill_rect(add_btn_rect, Color::rgba(45, 212, 191, 230), 5.0);
                     builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(sidebar_w - 76.0, content_y_start + 9.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-                    let add_snip_txt = self.shape_cached("Создать", StyleId::Small, None);
+                    let add_snip_txt = self.shape_cached(add_snip_label, StyleId::Small, None);
                     builder.text(LogicalPoint::new(sidebar_w - 58.0, content_y_start + 7.0), add_snip_txt, bg_app);
                 } else {
                     builder.fill_rect(add_btn_rect, Color::rgba(22, 38, 70, 200), 5.0);
                     builder.stroke_rect(add_btn_rect, accent_mint, 1.0, 5.0);
                     builder.icon(ICON_PLUS_ID, LogicalRect::from_xywh(sidebar_w - 76.0, content_y_start + 9.0, 14.0, 14.0), accent_mint);
-                    let add_snip_txt = self.shape_cached("Создать", StyleId::Small, None);
+                    let add_snip_txt = self.shape_cached(add_snip_label, StyleId::Small, None);
                     builder.text(LogicalPoint::new(sidebar_w - 58.0, content_y_start + 7.0), add_snip_txt, text_main);
                 }
 
@@ -1469,7 +1500,7 @@ impl UiRenderer {
             }
 
             let title_y = center_y + if self.logo_loaded { 84.0 } else { 0.0 };
-            let w_title = self.shape_cached("EvertySSH — Универсальный SSH клиент", StyleId::Title, None);
+            let w_title = self.shape_cached(tr(lang, "EvertySSH — Универсальный SSH клиент", "EvertySSH — Modern SSH Client"), StyleId::Title, None);
             builder.text(LogicalPoint::new(center_x + 70.0, title_y), w_title, text_main);
 
             let is_w_add_hover = app.hover == HoverTarget::WelcomeAdd;
@@ -1478,21 +1509,21 @@ impl UiRenderer {
             let btn_add_rect = LogicalRect::from_xywh(center_x + 90.0, title_y + 36.0, 160.0, 36.0);
             builder.fill_rect(btn_add_rect, if is_w_add_hover { accent_mint } else { Color::rgba(20, 48, 72, 255) }, 6.0);
             builder.stroke_rect(btn_add_rect, accent_mint, 1.2, 6.0);
-            let btn_text = self.shape_cached("+ Добавить сервер", StyleId::SansBold, None);
+            let btn_text = self.shape_cached(tr(lang, "+ Добавить сервер", "+ Add Server"), StyleId::SansBold, None);
             builder.text(LogicalPoint::new(center_x + 110.0, title_y + 44.0), btn_text, if is_w_add_hover { Color::rgba(9, 14, 26, 255) } else { accent_mint });
 
             let btn_conn_rect = LogicalRect::from_xywh(center_x + 260.0, title_y + 36.0, 150.0, 36.0);
             builder.fill_rect(btn_conn_rect, if is_w_conn_hover { card_hover_bg } else { card_bg }, 6.0);
             builder.stroke_rect(btn_conn_rect, if is_w_conn_hover { accent_mint } else { card_border }, 1.0, 6.0);
-            let btn_conn_text = self.shape_cached("⚡ Подключиться", StyleId::Sans, None);
+            let btn_conn_text = self.shape_cached(tr(lang, "⚡ Подключиться", "⚡ Connect"), StyleId::Sans, None);
             builder.text(LogicalPoint::new(center_x + 282.0, title_y + 44.0), btn_conn_text, text_main);
 
             let hints = [
-                "• Выберите сервер из списка слева (клик по ▶ или двойной клик)",
-                "• Нажмите Ctrl+N чтобы добавить новый SSH сервер",
-                "• Нажмите Ctrl+R для умного поиска по истории команд",
-                "• Вставка в терминал: Ctrl+V или Shift+Insert",
-                "• Профили: ~/.evertyssh/hosts.toml | История: ~/.evertyssh/history.db",
+                tr(lang, "• Выберите сервер из списка слева (клик по ▶ или двойной клик)", "• Select host from left list (click ▶ or double-click)"),
+                tr(lang, "• Нажмите Ctrl+N чтобы добавить новый SSH сервер", "• Press Ctrl+N to add a new SSH server"),
+                tr(lang, "• Нажмите Ctrl+R для умного поиска по истории команд", "• Press Ctrl+R for smart command history search"),
+                tr(lang, "• Вставка в терминал: Ctrl+V или Shift+Insert", "• Paste into terminal: Ctrl+V or Shift+Insert"),
+                tr(lang, "• Профили: ~/.evertyssh/hosts.toml | История: ~/.evertyssh/history.db", "• Hosts: ~/.evertyssh/hosts.toml | History: ~/.evertyssh/history.db"),
             ];
             for (idx, hint) in hints.iter().enumerate() {
                 let h_layout = self.shape_cached(hint, StyleId::Sans, None);
@@ -1522,9 +1553,9 @@ impl UiRenderer {
             builder.stroke_rect(modal_rect, accent_mint, 1.5, 8.0);
 
             let modal_title = if app.add_host_modal.is_editing {
-                "Редактировать сервер"
+                tr(lang, "Редактировать сервер", "Edit Server")
             } else {
-                "Добавить новый SSH сервер"
+                tr(lang, "Добавить новый SSH сервер", "Add New SSH Server")
             };
             let t_layout = self.shape_cached(modal_title, StyleId::Title, None);
             builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 20.0), t_layout, text_main);
@@ -1543,11 +1574,11 @@ impl UiRenderer {
             let m = &app.add_host_modal;
 
             let fields = [
-                ("Название сервера:", &m.name, "например, Production Web 01"),
-                ("Хост / IP адрес:", &m.hostname, "например, 192.168.1.100 или server.com"),
-                ("Порт:", &m.port, "22"),
-                ("Пользователь:", &m.username, "root"),
-                ("Группа:", &m.group, "Production, Staging, Dev..."),
+                (tr(lang, "Название сервера:", "Server Name:"), &m.name, tr(lang, "например, Production Web 01", "e.g., Production Web 01")),
+                (tr(lang, "Хост / IP адрес:", "Host / IP Address:"), &m.hostname, "192.168.1.100"),
+                (tr(lang, "Порт:", "Port:"), &m.port, "22"),
+                (tr(lang, "Пользователь:", "Username:"), &m.username, "root"),
+                (tr(lang, "Группа:", "Group:"), &m.group, "Production, Staging, Dev..."),
             ];
 
             let mut f_y = modal_y + 60.0;
@@ -1581,13 +1612,13 @@ impl UiRenderer {
             }
 
             // Auth Mode Selection
-            let auth_label = self.shape_cached("Аутентификация:", StyleId::Small, None);
+            let auth_label = self.shape_cached(tr(lang, "Аутентификация:", "Authentication:"), StyleId::Small, None);
             builder.text(LogicalPoint::new(modal_x + 24.0, f_y + 7.0), auth_label, text_dim);
 
             let auth_modes = [
                 (AuthModeChoice::Agent, "SSH-Agent"),
-                (AuthModeChoice::Key, "SSH Ключ"),
-                (AuthModeChoice::Password, "Пароль"),
+                (AuthModeChoice::Key, tr(lang, "SSH Ключ", "SSH Key")),
+                (AuthModeChoice::Password, tr(lang, "Пароль", "Password")),
             ];
             let mut btn_x = modal_x + 160.0;
             for (mode, label) in auth_modes {
@@ -1650,7 +1681,7 @@ impl UiRenderer {
                 let is_browse_hover = app.hover == HoverTarget::ModalBrowseKey;
                 builder.fill_rect(browse_rect, if is_browse_hover { card_hover_bg } else { Color::rgba(22, 34, 60, 255) }, 4.0);
                 builder.stroke_rect(browse_rect, if is_browse_hover { accent_mint } else { card_border }, 1.0, 4.0);
-                let b_txt = self.shape_cached("📁 Обзор", StyleId::Small, None);
+                let b_txt = self.shape_cached(tr(lang, "📁 Обзор", "📁 Browse"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(browse_x + 10.0, f_y + 7.0), b_txt, if is_browse_hover { accent_mint } else { text_main });
 
                 // Generate Button ⚡ Создать
@@ -1659,7 +1690,7 @@ impl UiRenderer {
                 let is_gen_hover = app.hover == HoverTarget::ModalGenerateKey;
                 builder.fill_rect(gen_rect, if is_gen_hover { accent_mint } else { Color::rgba(20, 45, 68, 255) }, 4.0);
                 builder.stroke_rect(gen_rect, accent_mint, 1.0, 4.0);
-                let g_txt = self.shape_cached("⚡ Создать", StyleId::Small, None);
+                let g_txt = self.shape_cached(tr(lang, "⚡ Создать", "⚡ Generate"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(gen_x + 10.0, f_y + 7.0), g_txt, if is_gen_hover { Color::rgba(9, 14, 26, 255) } else { accent_mint });
 
                 f_y += 38.0;
@@ -1667,7 +1698,7 @@ impl UiRenderer {
                 let is_focused = m.active_field == 5;
                 let is_hover = app.hover == HoverTarget::ModalField(5);
 
-                let l_layout = self.shape_cached("Пароль:", StyleId::Small, None);
+                let l_layout = self.shape_cached(tr(lang, "Пароль:", "Password:"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + 24.0, f_y + 7.0), l_layout, text_dim);
 
                 let inp_x = modal_x + 160.0;
@@ -1680,7 +1711,7 @@ impl UiRenderer {
                     inp_rect,
                     is_focused,
                     is_hover,
-                    "Введите пароль",
+                    tr(lang, "Введите пароль", "Enter password"),
                     true,
                     app.caret_visible,
                     accent_mint,
@@ -1708,7 +1739,7 @@ impl UiRenderer {
                 5.0,
             );
             builder.stroke_rect(save_btn_rect, accent_mint, 1.2, 5.0);
-            let s_layout = self.shape_cached("Сохранить", StyleId::SansBold, None);
+            let s_layout = self.shape_cached(tr(lang, "Сохранить", "Save"), StyleId::SansBold, None);
             builder.text(LogicalPoint::new(modal_x + modal_w - 256.0, modal_y + modal_h - 40.0), s_layout, accent_mint);
 
             let conn_btn_rect = LogicalRect::from_xywh(modal_x + modal_w - 146.0, modal_y + modal_h - 48.0, 126.0, 34.0);
@@ -1717,7 +1748,7 @@ impl UiRenderer {
                 if is_conn_hover { accent_emerald } else { Color::rgba(45, 212, 191, 220) },
                 5.0,
             );
-            let c_layout = self.shape_cached("Подключить", StyleId::SansBold, None);
+            let c_layout = self.shape_cached(tr(lang, "Подключить", "Connect"), StyleId::SansBold, None);
             builder.text(LogicalPoint::new(modal_x + modal_w - 128.0, modal_y + modal_h - 40.0), c_layout, Color::rgba(10, 16, 30, 255));
         }
 
@@ -1870,7 +1901,7 @@ impl UiRenderer {
                 let is_cp_hover = app.hover == HoverTarget::KeyToolCopyPubBtn;
                 builder.fill_rect(cp_rect, if is_cp_hover { card_hover_bg } else { Color::rgba(20, 32, 58, 255) }, 4.0);
                 builder.stroke_rect(cp_rect, if is_cp_hover { accent_mint } else { card_border }, 1.0, 4.0);
-                let cp_lbl = self.shape_cached("📋 Скопировать ключ", StyleId::Small, None);
+                let cp_lbl = self.shape_cached(tr(lang, "📋 Скопировать ключ", "📋 Copy Key"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(bx + 16.0, btn_y + 9.0), cp_lbl, if is_cp_hover { accent_mint } else { text_main });
                 bx += 168.0;
 
@@ -1880,7 +1911,7 @@ impl UiRenderer {
                     let is_send_hover = app.hover == HoverTarget::KeyToolSendTermBtn;
                     builder.fill_rect(send_rect, if is_send_hover { accent_mint } else { Color::rgba(22, 48, 72, 255) }, 4.0);
                     builder.stroke_rect(send_rect, accent_mint, 1.0, 4.0);
-                    let send_lbl = self.shape_cached("⚡ Отправить на сервер", StyleId::Small, None);
+                    let send_lbl = self.shape_cached(tr(lang, "⚡ Отправить на сервер", "⚡ Send to Server"), StyleId::Small, None);
                     builder.text(LogicalPoint::new(bx + 12.0, btn_y + 9.0), send_lbl, if is_send_hover { Color::rgba(9, 14, 26, 255) } else { accent_mint });
                     bx += 168.0;
 
@@ -1889,7 +1920,7 @@ impl UiRenderer {
                     let is_bind_hover = app.hover == HoverTarget::KeyToolBindHostBtn;
                     builder.fill_rect(bind_rect, if is_bind_hover { card_hover_bg } else { Color::rgba(20, 32, 58, 255) }, 4.0);
                     builder.stroke_rect(bind_rect, if is_bind_hover { accent_mint } else { card_border }, 1.0, 4.0);
-                    let bind_lbl = self.shape_cached("💾 Привязать к серверу", StyleId::Small, None);
+                    let bind_lbl = self.shape_cached(tr(lang, "💾 Привязать к серверу", "💾 Bind to Host"), StyleId::Small, None);
                     builder.text(LogicalPoint::new(bx + 12.0, btn_y + 9.0), bind_lbl, if is_bind_hover { accent_mint } else { text_main });
                 }
             }
@@ -1918,7 +1949,7 @@ impl UiRenderer {
 
             let is_empty = app.command_search_input.text.is_empty();
             let prompt_str = if is_empty {
-                "Поиск по командам (Enter — запустить в активном терминале)..."
+                tr(lang, "Поиск по командам (Enter — запустить в активном терминале)...", "Search commands (Enter to execute in active terminal)...")
             } else {
                 &app.command_search_input.text
             };
@@ -1988,9 +2019,9 @@ impl UiRenderer {
                 builder.stroke_rect(menu_rect, accent_mint, 1.2, 6.0);
 
                 let items = [
-                    (ContextMenuItem::Copy, "📋  Копировать"),
-                    (ContextMenuItem::SearchGoogle, "🔍  Искать в Google"),
-                    (ContextMenuItem::Paste, "⚡  Вставить"),
+                    (ContextMenuItem::Copy, tr(lang, "📋  Копировать", "📋  Copy")),
+                    (ContextMenuItem::SearchGoogle, tr(lang, "🔍  Искать в Google", "🔍  Search Google")),
+                    (ContextMenuItem::Paste, tr(lang, "⚡  Вставить", "⚡  Paste")),
                 ];
 
                 for (idx, (item, label)) in items.iter().enumerate() {
@@ -2140,7 +2171,11 @@ impl UiRenderer {
         let status_layout = self.shape_cached(&status_text, StyleId::Small, None);
         builder.text(LogicalPoint::new(16.0, footer_y + 6.0), status_layout, text_dim);
 
-        let hotkey_hint = "Ctrl+N Новый хост | Ctrl+R Поиск | Ctrl+V Вставка | Ctrl+T Новая вкладка | Esc Закрыть";
+        let hotkey_hint = tr(
+            lang,
+            "Ctrl+N Новый хост | Ctrl+R Поиск | Ctrl+V Вставка | Ctrl+T Новая вкладка | Esc Закрыть",
+            "Ctrl+N New Host | Ctrl+R Search | Ctrl+V Paste | Ctrl+T New Tab | Esc Close",
+        );
         let hint_layout = self.shape_cached(hotkey_hint, StyleId::Small, None);
         builder.text(LogicalPoint::new(w - 480.0, footer_y + 6.0), hint_layout, text_muted);
 
@@ -2156,7 +2191,7 @@ impl UiRenderer {
             builder.fill_rect(modal_rect, Color::rgba(14, 23, 42, 255), 8.0);
             builder.stroke_rect(modal_rect, accent_mint, 1.5, 8.0);
 
-            let t_layout = self.shape_cached("Создать сниппет команды", StyleId::Title, None);
+            let t_layout = self.shape_cached(tr(lang, "Создать сниппет команды", "Create Command Snippet"), StyleId::Title, None);
             builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 20.0), t_layout, text_main);
 
             // Close button
@@ -2171,10 +2206,10 @@ impl UiRenderer {
             }
 
             let snip_fields = [
-                ("Название:", &app.add_snippet_modal.title, "например, Перезапуск Nginx"),
-                ("Команда SSH:", &app.add_snippet_modal.command, "sudo systemctl restart nginx"),
-                ("Категория:", &app.add_snippet_modal.category, "General, Docker, Web, Deploy..."),
-                ("Описание (опционально):", &app.add_snippet_modal.description, "Быстрый рестарт веб-сервера"),
+                (tr(lang, "Название:", "Title:"), &app.add_snippet_modal.title, tr(lang, "например, Перезапуск Nginx", "e.g. Restart Nginx")),
+                (tr(lang, "Команда SSH:", "SSH Command:"), &app.add_snippet_modal.command, "sudo systemctl restart nginx"),
+                (tr(lang, "Категория:", "Category:"), &app.add_snippet_modal.category, "General, Docker, Web, Deploy..."),
+                (tr(lang, "Описание (опционально):", "Description (optional):"), &app.add_snippet_modal.description, tr(lang, "Быстрый рестарт веб-сервера", "Quick restart of web server")),
             ];
 
             let mut f_y = modal_y + 55.0;
@@ -2217,13 +2252,13 @@ impl UiRenderer {
                 builder.fill_rect(cancel_rect, Color::rgba(30, 48, 85, 220), 4.0);
             }
             builder.stroke_rect(cancel_rect, card_border, 1.0, 4.0);
-            let c_layout = self.shape_cached("Отмена", StyleId::Small, None);
+            let c_layout = self.shape_cached(tr(lang, "Отмена", "Cancel"), StyleId::Small, None);
             builder.text(LogicalPoint::new(modal_x + modal_w - 220.0, btn_y + 7.0), c_layout, text_dim);
 
             let is_save_h = app.hover == HoverTarget::ModalSnippetSave;
             let save_rect = LogicalRect::from_xywh(modal_x + modal_w - 140.0, btn_y, 116.0, 32.0);
             builder.fill_rect(save_rect, if is_save_h { Color::rgba(45, 212, 191, 230) } else { accent_mint }, 4.0);
-            let s_layout = self.shape_cached("💾 Сохранить", StyleId::SansBold, None);
+            let s_layout = self.shape_cached(tr(lang, "💾 Сохранить", "💾 Save"), StyleId::SansBold, None);
             builder.text(LogicalPoint::new(modal_x + modal_w - 130.0, btn_y + 7.0), s_layout, bg_app);
         }
 
@@ -2241,7 +2276,7 @@ impl UiRenderer {
                 builder.stroke_rect(modal_rect, accent_mint, 1.5, 8.0);
 
                 // Title
-                let t_layout = self.shape_cached("Дашборд сессии SSH", StyleId::Title, None);
+                let t_layout = self.shape_cached(tr(lang, "Дашборд сессии SSH", "SSH Session Dashboard"), StyleId::Title, None);
                 builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 20.0), t_layout, text_main);
 
                 // Close button
@@ -2262,32 +2297,32 @@ impl UiRenderer {
                 builder.fill_rect(stat_rect, Color::rgba(20, 32, 58, 255), 6.0);
                 builder.stroke_rect(stat_rect, card_border, 1.0, 6.0);
 
-                let sess_info = format!("Хост: {}@{}", dash.session.username, dash.session.host_address);
+                let sess_info = format!("{}: {}@{}", tr(lang, "Хост", "Host"), dash.session.username, dash.session.host_address);
                 let s_layout = self.shape_cached(&sess_info, StyleId::SansBold, None);
                 builder.text(LogicalPoint::new(modal_x + 36.0, stat_box_y + 12.0), s_layout, accent_mint);
 
                 let start_str = dash.session.started_at.format("%Y-%m-%d %H:%M:%S").to_string();
-                let end_str = dash.session.ended_at.map(|t| t.format("%H:%M:%S").to_string()).unwrap_or_else(|| "Активна".into());
+                let end_str = dash.session.ended_at.map(|t| t.format("%H:%M:%S").to_string()).unwrap_or_else(|| tr(lang, "Активна", "Active").into());
                 let dur_str = dash.session.ended_at.map(|e| {
                     let secs = (e - dash.session.started_at).num_seconds();
-                    format!("{} сек", secs)
-                }).unwrap_or_else(|| "В процессе".into());
-                let sub_info = format!("Старт: {} | Завершение: {} | Длительность: {}", start_str, end_str, dur_str);
+                    format!("{} {}", secs, tr(lang, "сек", "sec"))
+                }).unwrap_or_else(|| tr(lang, "В процессе", "In progress").into());
+                let sub_info = format!("{}: {} | {}: {} | {}: {}", tr(lang, "Старт", "Start"), start_str, tr(lang, "Завершение", "End"), end_str, tr(lang, "Длительность", "Duration"), dur_str);
                 let sub_layout = self.shape_cached(&sub_info, StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + 36.0, stat_box_y + 36.0), sub_layout, text_dim);
 
-                let status_line = format!("Статус: {} | Зафиксировано команд: {}", dash.session.status, dash.commands.len());
+                let status_line = format!("{}: {} | {}: {}", tr(lang, "Статус", "Status"), dash.session.status, tr(lang, "Зафиксировано команд", "Commands logged"), dash.commands.len());
                 let st_layout = self.shape_cached(&status_line, StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + 36.0, stat_box_y + 56.0), st_layout, text_muted);
 
                 // Command history header
-                let cmd_h_layout = self.shape_cached("Журнал команд сессии:", StyleId::SansBold, None);
+                let cmd_h_layout = self.shape_cached(tr(lang, "Журнал команд сессии:", "Session Command Log:"), StyleId::SansBold, None);
                 builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 148.0), cmd_h_layout, text_main);
 
                 // Command list
                 let cmd_start_y = modal_y + 170.0;
                 if dash.commands.is_empty() {
-                    let empty_l = self.shape_cached("В этой сессии еще не выполнялись команды", StyleId::Small, None);
+                    let empty_l = self.shape_cached(tr(lang, "В этой сессии еще не выполнялись команды", "No commands executed in this session"), StyleId::Small, None);
                     builder.text(LogicalPoint::new(modal_x + 36.0, cmd_start_y + 20.0), empty_l, text_muted);
                 } else {
                     for (cmd_idx, cmd) in dash.commands.iter().enumerate().take(7) {
@@ -2333,28 +2368,29 @@ impl UiRenderer {
                 let btn_y = modal_y + modal_h - 48.0;
 
                 let is_del_h = app.hover == HoverTarget::SessionDashboardDelete;
-                let del_rect = LogicalRect::from_xywh(modal_x + 24.0, btn_y, 120.0, 34.0);
+                let del_rect = LogicalRect::from_xywh(modal_x + 24.0, btn_y, 140.0, 34.0);
                 if is_del_h {
                     builder.fill_rect(del_rect, Color::rgba(239, 68, 68, 220), 4.0);
                 } else {
                     builder.fill_rect(del_rect, Color::rgba(60, 25, 35, 180), 4.0);
                 }
                 builder.stroke_rect(del_rect, Color::rgba(239, 68, 68, 120), 1.0, 4.0);
-                let del_l = self.shape_cached("Удалить сессию", StyleId::Small, None);
+                let del_l = self.shape_cached(tr(lang, "Удалить сессию", "Delete Session"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + 36.0, btn_y + 8.0), del_l, text_main);
 
                 let is_rec_h = app.hover == HoverTarget::SessionDashboardReconnect;
                 let rec_rect = LogicalRect::from_xywh(modal_x + modal_w - 234.0, btn_y, 210.0, 34.0);
+                let rec_txt = tr(lang, "Подключиться снова", "Reconnect Session");
                 if is_rec_h {
                     builder.fill_rect(rec_rect, accent_mint, 5.0);
                     builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 222.0, btn_y + 10.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-                    let rec_l = self.shape_cached("Подключиться снова", StyleId::SansBold, None);
+                    let rec_l = self.shape_cached(rec_txt, StyleId::SansBold, None);
                     builder.text(LogicalPoint::new(modal_x + modal_w - 200.0, btn_y + 8.0), rec_l, Color::rgba(9, 14, 26, 255));
                 } else {
                     builder.fill_rect(rec_rect, Color::rgba(20, 35, 65, 240), 5.0);
                     builder.stroke_rect(rec_rect, accent_mint, 1.2, 5.0);
                     builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 222.0, btn_y + 10.0, 14.0, 14.0), accent_mint);
-                    let rec_l = self.shape_cached("Подключиться снова", StyleId::SansBold, None);
+                    let rec_l = self.shape_cached(rec_txt, StyleId::SansBold, None);
                     builder.text(LogicalPoint::new(modal_x + modal_w - 200.0, btn_y + 8.0), rec_l, text_main);
                 }
             }
@@ -2370,10 +2406,10 @@ impl UiRenderer {
                 builder.stroke_rect(menu_rect, accent_mint, 1.2, 6.0);
 
                 let items = [
-                    (InputMenuAction::Cut, "✂  Вырезать", "Ctrl+X"),
-                    (InputMenuAction::Copy, "📋 Копировать", "Ctrl+C"),
-                    (InputMenuAction::Paste, "⚡ Вставить", "Ctrl+V"),
-                    (InputMenuAction::SelectAll, "🔲 Выделить всё", "Ctrl+A"),
+                    (InputMenuAction::Cut, tr(lang, "✂  Вырезать", "✂  Cut"), "Ctrl+X"),
+                    (InputMenuAction::Copy, tr(lang, "📋 Копировать", "📋 Copy"), "Ctrl+C"),
+                    (InputMenuAction::Paste, tr(lang, "⚡ Вставить", "⚡ Paste"), "Ctrl+V"),
+                    (InputMenuAction::SelectAll, tr(lang, "🔲 Выделить всё", "🔲 Select All"), "Ctrl+A"),
                 ];
 
                 let mut item_y = menu.y + 6.0;
@@ -2420,15 +2456,15 @@ impl UiRenderer {
                     Color::rgba(239, 68, 68, 255),
                 );
 
-                let title_l = self.shape_cached("Удалить сервер?", StyleId::Title, None);
+                let title_l = self.shape_cached(tr(lang, "Удалить сервер?", "Delete Host?"), StyleId::Title, None);
                 builder.text(LogicalPoint::new(modal_x + 70.0, modal_y + 28.0), title_l, text_main);
 
                 // Host details
-                let msg = format!("Вы действительно хотите удалить сервер «{}»?", confirm.host_name);
+                let msg = format!("{} «{}»?", tr(lang, "Вы действительно хотите удалить сервер", "Are you sure you want to delete host"), confirm.host_name);
                 let msg_l = self.shape_cached(&msg, StyleId::SansBold, Some(LogicalPx(modal_w - 50.0)));
                 builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 76.0), msg_l, text_main);
 
-                let sub_msg = format!("Адрес: {}. Это действие нельзя отменить.", confirm.host_address);
+                let sub_msg = format!("{}: {}. {}", tr(lang, "Адрес", "Address"), confirm.host_address, tr(lang, "Это действие нельзя отменить.", "This action cannot be undone."));
                 let sub_l = self.shape_cached(&sub_msg, StyleId::Small, Some(LogicalPx(modal_w - 50.0)));
                 builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 104.0), sub_l, text_muted);
 
@@ -2444,7 +2480,7 @@ impl UiRenderer {
                     builder.fill_rect(cancel_rect, Color::rgba(20, 32, 58, 200), 5.0);
                 }
                 builder.stroke_rect(cancel_rect, card_border, 1.0, 5.0);
-                let cancel_l = self.shape_cached("Отмена (Esc)", StyleId::Small, None);
+                let cancel_l = self.shape_cached(tr(lang, "Отмена (Esc)", "Cancel (Esc)"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + modal_w - 224.0, btn_y + 8.0), cancel_l, text_dim);
 
                 // Delete Button
@@ -2460,7 +2496,7 @@ impl UiRenderer {
                     LogicalRect::from_xywh(modal_x + modal_w - 110.0, btn_y + 10.0, 14.0, 14.0),
                     Color::rgba(255, 255, 255, 255),
                 );
-                let del_btn_l = self.shape_cached("Удалить", StyleId::SansBold, None);
+                let del_btn_l = self.shape_cached(tr(lang, "Удалить", "Delete"), StyleId::SansBold, None);
                 builder.text(LogicalPoint::new(modal_x + modal_w - 90.0, btn_y + 7.0), del_btn_l, Color::rgba(255, 255, 255, 255));
             }
         }
@@ -2502,9 +2538,9 @@ impl UiRenderer {
                 );
 
                 let title_text = if confirm_run.is_dangerous {
-                    "⚠️ Подтверждение опасной команды"
+                    tr(lang, "⚠️ Подтверждение опасной команды", "⚠️ Dangerous Command Confirmation")
                 } else {
-                    "Подтверждение запуска команды"
+                    tr(lang, "Подтверждение запуска команды", "Confirm Command Execution")
                 };
                 let title_l = self.shape_cached(title_text, StyleId::Title, None);
                 builder.text(LogicalPoint::new(modal_x + 70.0, modal_y + 20.0), title_l, text_main);
@@ -2519,7 +2555,7 @@ impl UiRenderer {
                     let banner_rect = LogicalRect::from_xywh(modal_x + 24.0, cur_y, modal_w - 48.0, 32.0);
                     builder.fill_rect(banner_rect, Color::rgba(245, 158, 11, 30), 5.0);
                     builder.stroke_rect(banner_rect, Color::rgba(245, 158, 11, 140), 1.0, 5.0);
-                    let warn_msg = format!("Внимание: {reason}");
+                    let warn_msg = format!("{}: {reason}", tr(lang, "Внимание", "Warning"));
                     let warn_l = self.shape_cached(&warn_msg, StyleId::Small, Some(LogicalPx(modal_w - 60.0)));
                     builder.text(LogicalPoint::new(modal_x + 36.0, cur_y + 8.0), warn_l, Color::rgba(252, 211, 77, 255));
                     cur_y += 40.0;
@@ -2537,7 +2573,7 @@ impl UiRenderer {
                 cur_y += cmd_box_h + 10.0;
 
                 // Target terminal status line
-                let target_info = format!("Сессия: {}", confirm_run.target_tab_title);
+                let target_info = format!("{}: {}", tr(lang, "Сессия", "Session"), confirm_run.target_tab_title);
                 let target_l = self.shape_cached(&target_info, StyleId::Small, Some(LogicalPx(modal_w - 50.0)));
                 let target_fg = if confirm_run.can_execute { accent_emerald } else { Color::rgba(239, 68, 68, 255) };
                 builder.text(LogicalPoint::new(modal_x + 26.0, cur_y + 4.0), target_l, target_fg);
@@ -2550,7 +2586,7 @@ impl UiRenderer {
                 let cancel_rect = LogicalRect::from_xywh(modal_x + modal_w - 360.0, btn_y, 96.0, 34.0);
                 builder.fill_rect(cancel_rect, if is_cancel_h { Color::rgba(30, 48, 85, 230) } else { Color::rgba(20, 32, 58, 200) }, 5.0);
                 builder.stroke_rect(cancel_rect, card_border, 1.0, 5.0);
-                let cancel_l = self.shape_cached("Отмена (Esc)", StyleId::Small, None);
+                let cancel_l = self.shape_cached(tr(lang, "Отмена (Esc)", "Cancel (Esc)"), StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + modal_w - 350.0, btn_y + 8.0), cancel_l, text_dim);
 
                 // 2. Copy Button
@@ -2559,18 +2595,23 @@ impl UiRenderer {
                 builder.fill_rect(copy_rect, if is_copy_h { Color::rgba(35, 55, 95, 230) } else { Color::rgba(20, 35, 65, 200) }, 5.0);
                 builder.stroke_rect(copy_rect, Color::rgba(45, 212, 191, 100), 1.0, 5.0);
                 builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(modal_x + modal_w - 244.0, btn_y + 10.0, 14.0, 14.0), accent_mint);
-                let copy_label = if confirm_run.copied_feedback { "Скопировано!" } else { "Копировать" };
+                let copy_label = if confirm_run.copied_feedback {
+                    tr(lang, "Скопировано!", "Copied!")
+                } else {
+                    tr(lang, "Копировать", "Copy")
+                };
                 let copy_l = self.shape_cached(copy_label, StyleId::Small, None);
                 builder.text(LogicalPoint::new(modal_x + modal_w - 224.0, btn_y + 8.0), copy_l, accent_mint);
 
                 // 3. Execute Button (Enter)
                 let is_exec_h = app.hover == HoverTarget::ConfirmRunExecute;
                 let exec_rect = LogicalRect::from_xywh(modal_x + modal_w - 132.0, btn_y, 110.0, 34.0);
+                let exec_txt = tr(lang, "Выполнить", "Execute");
 
                 if !confirm_run.can_execute {
                     builder.fill_rect(exec_rect, Color::rgba(30, 42, 65, 140), 5.0);
                     builder.stroke_rect(exec_rect, card_border, 1.0, 5.0);
-                    let exec_l = self.shape_cached("Выполнить", StyleId::SansBold, None);
+                    let exec_l = self.shape_cached(exec_txt, StyleId::SansBold, None);
                     builder.text(LogicalPoint::new(modal_x + modal_w - 110.0, btn_y + 7.0), exec_l, text_muted);
                 } else if confirm_run.is_dangerous {
                     if is_exec_h {
@@ -2579,19 +2620,19 @@ impl UiRenderer {
                         builder.fill_rect(exec_rect, Color::rgba(239, 68, 68, 230), 5.0);
                     }
                     builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 122.0, btn_y + 10.0, 14.0, 14.0), Color::rgba(255, 255, 255, 255));
-                    let exec_l = self.shape_cached("Выполнить", StyleId::SansBold, None);
+                    let exec_l = self.shape_cached(exec_txt, StyleId::SansBold, None);
                     builder.text(LogicalPoint::new(modal_x + modal_w - 100.0, btn_y + 7.0), exec_l, Color::rgba(255, 255, 255, 255));
                 } else {
                     if is_exec_h {
                         builder.fill_rect(exec_rect, accent_mint, 5.0);
                         builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 122.0, btn_y + 10.0, 14.0, 14.0), Color::rgba(9, 14, 26, 255));
-                        let exec_l = self.shape_cached("Выполнить", StyleId::SansBold, None);
+                        let exec_l = self.shape_cached(exec_txt, StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + modal_w - 100.0, btn_y + 7.0), exec_l, Color::rgba(9, 14, 26, 255));
                     } else {
                         builder.fill_rect(exec_rect, Color::rgba(20, 36, 60, 255), 5.0);
                         builder.stroke_rect(exec_rect, accent_mint, 1.2, 5.0);
                         builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 122.0, btn_y + 10.0, 14.0, 14.0), accent_mint);
-                        let exec_l = self.shape_cached("Выполнить", StyleId::SansBold, None);
+                        let exec_l = self.shape_cached(exec_txt, StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + modal_w - 100.0, btn_y + 7.0), exec_l, accent_mint);
                     }
                 }
@@ -2618,7 +2659,7 @@ impl UiRenderer {
                     LogicalRect::from_xywh(modal_x + 24.0, modal_y + 20.0, 20.0, 20.0),
                     accent_mint,
                 );
-                let t_layout = self.shape_cached("Настройки EvertySSH", StyleId::Title, None);
+                let t_layout = self.shape_cached(tr(lang, "Настройки EvertySSH", "EvertySSH Settings"), StyleId::Title, None);
                 builder.text(LogicalPoint::new(modal_x + 52.0, modal_y + 18.0), t_layout, text_main);
 
                 // Close button
@@ -2635,9 +2676,9 @@ impl UiRenderer {
                 // Tabs: 🔒 Безопасность | 💾 Резервная копия | ⚙ Параметры
                 let tabs_y = modal_y + 55.0;
                 let tabs_info = [
-                    (SettingsTab::Security, "🔒 Безопасность", modal_x + 24.0, 136.0),
-                    (SettingsTab::Backup, "💾 Резервная копия", modal_x + 165.0, 145.0),
-                    (SettingsTab::General, "⚙ Параметры", modal_x + 315.0, 135.0),
+                    (SettingsTab::Security, tr(lang, "🔒 Безопасность", "🔒 Security"), modal_x + 24.0, 136.0),
+                    (SettingsTab::Backup, tr(lang, "💾 Резервная копия", "💾 Backup"), modal_x + 165.0, 145.0),
+                    (SettingsTab::General, tr(lang, "⚙ Параметры", "⚙ General"), modal_x + 315.0, 135.0),
                 ];
 
                 for (tab_type, tab_label, tab_x, tab_w) in tabs_info {
@@ -2675,26 +2716,26 @@ impl UiRenderer {
                             builder.fill_rect(status_rect, Color::rgba(16, 185, 129, 30), 5.0);
                             builder.stroke_rect(status_rect, Color::rgba(52, 211, 153, 140), 1.0, 5.0);
                             builder.icon(ICON_LOCK_ID, LogicalRect::from_xywh(modal_x + 36.0, badge_y + 9.0, 16.0, 16.0), accent_emerald);
-                            let st_l = self.shape_cached("Защита включена: при запуске требуется мастер-пароль", StyleId::SansBold, None);
+                            let st_l = self.shape_cached(tr(lang, "Защита включена: при запуске требуется мастер-пароль", "Protection active: master password required on startup"), StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 60.0, badge_y + 8.0), st_l, accent_emerald);
                         } else {
                             builder.fill_rect(status_rect, Color::rgba(30, 48, 85, 40), 5.0);
                             builder.stroke_rect(status_rect, card_border, 1.0, 5.0);
-                            let st_l = self.shape_cached("Защита выключена: приложение запускается без пароля", StyleId::Sans, None);
+                            let st_l = self.shape_cached(tr(lang, "Защита выключена: приложение запускается без пароля", "Protection disabled: application opens without password"), StyleId::Sans, None);
                             builder.text(LogicalPoint::new(modal_x + 36.0, badge_y + 8.0), st_l, text_dim);
                         }
 
                         let mut cy = modal_y + 155.0;
                         let fields_to_show = if has_existing {
                             vec![
-                                (0, "Текущий пароль:", &settings.current_password),
-                                (1, "Новый пароль:", &settings.new_password),
-                                (2, "Повтор пароля:", &settings.confirm_password),
+                                (0, tr(lang, "Текущий пароль:", "Current Password:"), &settings.current_password),
+                                (1, tr(lang, "Новый пароль:", "New Password:"), &settings.new_password),
+                                (2, tr(lang, "Повтор пароля:", "Confirm Password:"), &settings.confirm_password),
                             ]
                         } else {
                             vec![
-                                (1, "Новый пароль:", &settings.new_password),
-                                (2, "Повтор пароля:", &settings.confirm_password),
+                                (1, tr(lang, "Новый пароль:", "New Password:"), &settings.new_password),
+                                (2, tr(lang, "Повтор пароля:", "Confirm Password:"), &settings.confirm_password),
                             ]
                         };
 
@@ -2712,7 +2753,7 @@ impl UiRenderer {
                                 input_rect,
                                 is_focused,
                                 is_hover,
-                                "Введите пароль...",
+                                tr(lang, "Введите пароль...", "Enter password..."),
                                 true,
                                 app.caret_visible && is_focused,
                                 accent_mint,
@@ -2743,34 +2784,36 @@ impl UiRenderer {
                                 builder.fill_rect(rem_rect, Color::rgba(60, 20, 30, 200), 5.0);
                             }
                             builder.stroke_rect(rem_rect, Color::rgba(239, 68, 68, 160), 1.0, 5.0);
-                            let rem_l = self.shape_cached("Снять защиту", StyleId::Small, None);
+                            let rem_l = self.shape_cached(tr(lang, "Снять защиту", "Disable Lock"), StyleId::Small, None);
                             builder.text(LogicalPoint::new(modal_x + modal_w - 296.0, btn_y + 8.0), rem_l, Color::rgba(255, 255, 255, 255));
 
                             // Save / Change Password Button
                             let is_save_h = app.hover == HoverTarget::SettingsSavePassword;
                             let save_rect = LogicalRect::from_xywh(modal_x + modal_w - 165.0, btn_y, 140.0, 34.0);
+                            let change_pwd_txt = tr(lang, "Сменить пароль", "Change Password");
                             if is_save_h {
                                 builder.fill_rect(save_rect, accent_mint, 5.0);
-                                let save_l = self.shape_cached("Сменить пароль", StyleId::SansBold, None);
+                                let save_l = self.shape_cached(change_pwd_txt, StyleId::SansBold, None);
                                 builder.text(LogicalPoint::new(modal_x + modal_w - 150.0, btn_y + 7.0), save_l, Color::rgba(9, 14, 26, 255));
                             } else {
                                 builder.fill_rect(save_rect, Color::rgba(20, 36, 60, 255), 5.0);
                                 builder.stroke_rect(save_rect, accent_mint, 1.2, 5.0);
-                                let save_l = self.shape_cached("Сменить пароль", StyleId::SansBold, None);
+                                let save_l = self.shape_cached(change_pwd_txt, StyleId::SansBold, None);
                                 builder.text(LogicalPoint::new(modal_x + modal_w - 150.0, btn_y + 7.0), save_l, accent_mint);
                             }
                         } else {
                             // Set Password Button
                             let is_save_h = app.hover == HoverTarget::SettingsSavePassword;
                             let save_rect = LogicalRect::from_xywh(modal_x + modal_w - 190.0, btn_y, 166.0, 34.0);
+                            let set_pwd_txt = tr(lang, "Установить пароль", "Set Password");
                             if is_save_h {
                                 builder.fill_rect(save_rect, accent_mint, 5.0);
-                                let save_l = self.shape_cached("Установить пароль", StyleId::SansBold, None);
+                                let save_l = self.shape_cached(set_pwd_txt, StyleId::SansBold, None);
                                 builder.text(LogicalPoint::new(modal_x + modal_w - 176.0, btn_y + 7.0), save_l, Color::rgba(9, 14, 26, 255));
                             } else {
                                 builder.fill_rect(save_rect, Color::rgba(20, 36, 60, 255), 5.0);
                                 builder.stroke_rect(save_rect, accent_mint, 1.2, 5.0);
-                                let save_l = self.shape_cached("Установить пароль", StyleId::SansBold, None);
+                                let save_l = self.shape_cached(set_pwd_txt, StyleId::SansBold, None);
                                 builder.text(LogicalPoint::new(modal_x + modal_w - 176.0, btn_y + 7.0), save_l, accent_mint);
                             }
                         }
@@ -2782,22 +2825,23 @@ impl UiRenderer {
                         builder.fill_rect(exp_box_rect, Color::rgba(20, 32, 58, 200), 6.0);
                         builder.stroke_rect(exp_box_rect, card_border, 1.0, 6.0);
 
-                        let exp_t = self.shape_cached("Резервная копия конфигурации", StyleId::SansBold, None);
+                        let exp_t = self.shape_cached(tr(lang, "Резервная копия конфигурации", "Configuration Backup"), StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + 38.0, exp_box_y + 12.0), exp_t, text_main);
 
-                        let exp_d = self.shape_cached("Сохраняет список всех серверов и параметры в JSON-файл.", StyleId::Small, None);
+                        let exp_d = self.shape_cached(tr(lang, "Сохраняет список всех серверов и параметры в JSON-файл.", "Saves all server configurations and parameters into a JSON file."), StyleId::Small, None);
                         builder.text(LogicalPoint::new(modal_x + 38.0, exp_box_y + 34.0), exp_d, text_muted);
 
                         let is_exp_h = app.hover == HoverTarget::SettingsExportJson;
                         let exp_btn_rect = LogicalRect::from_xywh(modal_x + 38.0, exp_box_y + 54.0, 200.0, 30.0);
+                        let exp_btn_lbl = tr(lang, "Экспорт в JSON...", "Export to JSON...");
                         if is_exp_h {
                             builder.fill_rect(exp_btn_rect, accent_mint, 5.0);
-                            let btn_l = self.shape_cached("Экспорт в JSON...", StyleId::SansBold, None);
+                            let btn_l = self.shape_cached(exp_btn_lbl, StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 72.0, exp_box_y + 60.0), btn_l, Color::rgba(9, 14, 26, 255));
                         } else {
                             builder.fill_rect(exp_btn_rect, Color::rgba(25, 42, 70, 255), 5.0);
                             builder.stroke_rect(exp_btn_rect, accent_mint, 1.0, 5.0);
-                            let btn_l = self.shape_cached("Экспорт в JSON...", StyleId::SansBold, None);
+                            let btn_l = self.shape_cached(exp_btn_lbl, StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 72.0, exp_box_y + 60.0), btn_l, accent_mint);
                         }
 
@@ -2807,22 +2851,23 @@ impl UiRenderer {
                         builder.fill_rect(imp_box_rect, Color::rgba(20, 32, 58, 200), 6.0);
                         builder.stroke_rect(imp_box_rect, card_border, 1.0, 6.0);
 
-                        let imp_t = self.shape_cached("Восстановление из файла", StyleId::SansBold, None);
+                        let imp_t = self.shape_cached(tr(lang, "Восстановление из файла", "Restore from File"), StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + 38.0, imp_box_y + 12.0), imp_t, text_main);
 
-                        let imp_d = self.shape_cached("Импортирует серверы из резервной копии и объединяет с текущими.", StyleId::Small, None);
+                        let imp_d = self.shape_cached(tr(lang, "Импортирует серверы из резервной копии и объединяет с текущими.", "Imports servers from backup and merges with existing."), StyleId::Small, None);
                         builder.text(LogicalPoint::new(modal_x + 38.0, imp_box_y + 34.0), imp_d, text_muted);
 
                         let is_imp_h = app.hover == HoverTarget::SettingsImportJson;
                         let imp_btn_rect = LogicalRect::from_xywh(modal_x + 38.0, imp_box_y + 54.0, 200.0, 30.0);
+                        let imp_btn_lbl = tr(lang, "Импорт из JSON...", "Import from JSON...");
                         if is_imp_h {
                             builder.fill_rect(imp_btn_rect, accent_mint, 5.0);
-                            let btn_l = self.shape_cached("Импорт из JSON...", StyleId::SansBold, None);
+                            let btn_l = self.shape_cached(imp_btn_lbl, StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 72.0, imp_box_y + 60.0), btn_l, Color::rgba(9, 14, 26, 255));
                         } else {
                             builder.fill_rect(imp_btn_rect, Color::rgba(25, 42, 70, 255), 5.0);
                             builder.stroke_rect(imp_btn_rect, accent_mint, 1.0, 5.0);
-                            let btn_l = self.shape_cached("Импорт из JSON...", StyleId::SansBold, None);
+                            let btn_l = self.shape_cached(imp_btn_lbl, StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 72.0, imp_box_y + 60.0), btn_l, accent_mint);
                         }
 
@@ -2834,10 +2879,49 @@ impl UiRenderer {
                         }
                     }
                     SettingsTab::General => {
-                        let mut cy = modal_y + 115.0;
+                        // Section: Language
+                        let lang_lbl = self.shape_cached(tr(lang, "Язык интерфейса:", "Interface Language:"), StyleId::SansBold, None);
+                        builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 110.0), lang_lbl, text_dim);
+
+                        let ru_active = lang == AppLanguage::Ru;
+                        let en_active = lang == AppLanguage::En;
+                        let ru_hover = app.hover == HoverTarget::SettingsSetLanguage(AppLanguage::Ru);
+                        let en_hover = app.hover == HoverTarget::SettingsSetLanguage(AppLanguage::En);
+
+                        // RU button
+                        let ru_rect = LogicalRect::from_xywh(modal_x + 240.0, modal_y + 105.0, 100.0, 30.0);
+                        builder.fill_rect(
+                            ru_rect,
+                            if ru_active { accent_mint } else if ru_hover { card_hover_bg } else { Color::rgba(18, 29, 52, 255) },
+                            4.0,
+                        );
+                        builder.stroke_rect(ru_rect, if ru_active { accent_mint } else { card_border }, 1.0, 4.0);
+                        let ru_l = self.shape_cached("Русский (RU)", StyleId::Small, None);
+                        builder.text(
+                            LogicalPoint::new(modal_x + 252.0, modal_y + 112.0),
+                            ru_l,
+                            if ru_active { Color::rgba(9, 14, 26, 255) } else { text_main },
+                        );
+
+                        // EN button
+                        let en_rect = LogicalRect::from_xywh(modal_x + 350.0, modal_y + 105.0, 100.0, 30.0);
+                        builder.fill_rect(
+                            en_rect,
+                            if en_active { accent_mint } else if en_hover { card_hover_bg } else { Color::rgba(18, 29, 52, 255) },
+                            4.0,
+                        );
+                        builder.stroke_rect(en_rect, if en_active { accent_mint } else { card_border }, 1.0, 4.0);
+                        let en_l = self.shape_cached("English (EN)", StyleId::Small, None);
+                        builder.text(
+                            LogicalPoint::new(modal_x + 362.0, modal_y + 112.0),
+                            en_l,
+                            if en_active { Color::rgba(9, 14, 26, 255) } else { text_main },
+                        );
+
+                        let mut cy = modal_y + 150.0;
 
                         // Field 0: Default User
-                        let u_lbl = self.shape_cached("Логин по умолчанию:", StyleId::SansBold, None);
+                        let u_lbl = self.shape_cached(tr(lang, "Логин по умолчанию:", "Default Username:"), StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + 24.0, cy + 6.0), u_lbl, text_dim);
 
                         let u_rect = LogicalRect::from_xywh(modal_x + 240.0, cy, modal_w - 270.0, 32.0);
@@ -2858,10 +2942,10 @@ impl UiRenderer {
                             text_muted,
                         );
 
-                        cy += 48.0;
+                        cy += 45.0;
 
                         // Field 1: Scrollback lines
-                        let sb_lbl = self.shape_cached("Буфер строк терминала:", StyleId::SansBold, None);
+                        let sb_lbl = self.shape_cached(tr(lang, "Буфер строк терминала:", "Terminal Scrollback Lines:"), StyleId::SansBold, None);
                         builder.text(LogicalPoint::new(modal_x + 24.0, cy + 6.0), sb_lbl, text_dim);
 
                         let sb_rect = LogicalRect::from_xywh(modal_x + 240.0, cy, modal_w - 270.0, 32.0);
@@ -2882,7 +2966,7 @@ impl UiRenderer {
                             text_muted,
                         );
 
-                        cy += 52.0;
+                        cy += 48.0;
 
                         // Checkbox: Confirm Delete
                         let is_chk_hov = app.hover == HoverTarget::SettingsToggleConfirmDelete;
@@ -2893,7 +2977,7 @@ impl UiRenderer {
                             builder.fill_rect(LogicalRect::from_xywh(modal_x + 27.0, cy + 5.0, 12.0, 12.0), accent_mint, 2.0);
                         }
 
-                        let chk_l = self.shape_cached("Подтверждать удаление серверов диалоговым окном", StyleId::Sans, None);
+                        let chk_l = self.shape_cached(tr(lang, "Подтверждать удаление серверов диалоговым окном", "Confirm server deletion with dialog"), StyleId::Sans, None);
                         builder.text(LogicalPoint::new(modal_x + 50.0, cy + 2.0), chk_l, if is_chk_hov { text_main } else { text_dim });
 
                         // Feedback message
@@ -2907,15 +2991,16 @@ impl UiRenderer {
                         let btn_y = modal_y + modal_h - 50.0;
                         let is_save_h = app.hover == HoverTarget::SettingsSaveGeneral;
                         let save_rect = LogicalRect::from_xywh(modal_x + modal_w - 180.0, btn_y, 156.0, 34.0);
+                        let save_txt = tr(lang, "Сохранить", "Save Settings");
                         if is_save_h {
                             builder.fill_rect(save_rect, accent_mint, 5.0);
-                            let save_l = self.shape_cached("Сохранить", StyleId::SansBold, None);
-                            builder.text(LogicalPoint::new(modal_x + modal_w - 140.0, btn_y + 7.0), save_l, Color::rgba(9, 14, 26, 255));
+                            let save_l = self.shape_cached(save_txt, StyleId::SansBold, None);
+                            builder.text(LogicalPoint::new(modal_x + modal_w - 150.0, btn_y + 7.0), save_l, Color::rgba(9, 14, 26, 255));
                         } else {
                             builder.fill_rect(save_rect, Color::rgba(20, 36, 60, 255), 5.0);
                             builder.stroke_rect(save_rect, accent_mint, 1.2, 5.0);
-                            let save_l = self.shape_cached("Сохранить", StyleId::SansBold, None);
-                            builder.text(LogicalPoint::new(modal_x + modal_w - 140.0, btn_y + 7.0), save_l, accent_mint);
+                            let save_l = self.shape_cached(save_txt, StyleId::SansBold, None);
+                            builder.text(LogicalPoint::new(modal_x + modal_w - 150.0, btn_y + 7.0), save_l, accent_mint);
                         }
                     }
                 }
@@ -2950,11 +3035,11 @@ impl UiRenderer {
             );
 
             // Title
-            let t_l = self.shape_cached("EvertySSH заблокирован", StyleId::Title, None);
+            let t_l = self.shape_cached(tr(lang, "EvertySSH заблокирован", "EvertySSH Locked"), StyleId::Title, None);
             let tw = t_l.metrics.size.width.0;
             builder.text(LogicalPoint::new(modal_x + (modal_w - tw) / 2.0, modal_y + 82.0), t_l, text_main);
 
-            let sub_l = self.shape_cached("Введите мастер-пароль для доступа", StyleId::Small, None);
+            let sub_l = self.shape_cached(tr(lang, "Введите мастер-пароль для доступа", "Enter master password to unlock"), StyleId::Small, None);
             let sw = sub_l.metrics.size.width.0;
             builder.text(LogicalPoint::new(modal_x + (modal_w - sw) / 2.0, modal_y + 106.0), sub_l, text_muted);
 
@@ -2968,7 +3053,7 @@ impl UiRenderer {
                 inp_rect,
                 is_foc,
                 is_hov,
-                "Мастер-пароль...",
+                tr(lang, "Мастер-пароль...", "Master password..."),
                 true,
                 app.caret_visible,
                 accent_mint,
@@ -2986,15 +3071,16 @@ impl UiRenderer {
             // Unlock Button
             let is_unlock_h = app.hover == HoverTarget::LockUnlockBtn;
             let unlock_rect = LogicalRect::from_xywh(modal_x + 30.0, modal_y + 194.0, modal_w - 60.0, 38.0);
+            let un_txt = tr(lang, "Разблокировать (Enter)", "Unlock (Enter)");
             if is_unlock_h {
                 builder.fill_rect(unlock_rect, accent_mint, 6.0);
-                let un_l = self.shape_cached("Разблокировать (Enter)", StyleId::SansBold, None);
+                let un_l = self.shape_cached(un_txt, StyleId::SansBold, None);
                 let uw = un_l.metrics.size.width.0;
                 builder.text(LogicalPoint::new(modal_x + (modal_w - uw) / 2.0, modal_y + 203.0), un_l, Color::rgba(9, 14, 26, 255));
             } else {
                 builder.fill_rect(unlock_rect, Color::rgba(25, 42, 70, 255), 6.0);
                 builder.stroke_rect(unlock_rect, accent_mint, 1.2, 6.0);
-                let un_l = self.shape_cached("Разблокировать (Enter)", StyleId::SansBold, None);
+                let un_l = self.shape_cached(un_txt, StyleId::SansBold, None);
                 let uw = un_l.metrics.size.width.0;
                 builder.text(LogicalPoint::new(modal_x + (modal_w - uw) / 2.0, modal_y + 203.0), un_l, accent_mint);
             }
