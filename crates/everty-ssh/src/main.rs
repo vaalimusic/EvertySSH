@@ -222,6 +222,14 @@ impl EvertySshApp {
                 self.state.key_tool_modal.active_field = idx;
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let modal_w = 580.0f64.min(w - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let input_start_x = modal_x + 170.0;
+                let fid = InputFieldId::KeyTool(idx);
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(fid, logical_x, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::KeyToolGenerateBtn => {
@@ -276,12 +284,12 @@ impl EvertySshApp {
                 self.state.caret_blink_time = Instant::now();
                 let modal_w = 540.0f64.min(w - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
-                let input_start_x = modal_x + 34.0;
-                let click_offset_px = (logical_x - input_start_x).max(0.0);
+                let input_start_x = modal_x + 170.0;
                 let fid = InputFieldId::AddHost(idx);
-                if let Some(inp) = self.state.get_text_input_mut(fid) {
-                    inp.set_cursor_from_click(click_offset_px, 7.8);
-                }
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(fid, logical_x, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::ModalAuthMode(mode) => {
@@ -335,18 +343,30 @@ impl EvertySshApp {
                 self.state.focused_input = Some(InputFieldId::HostSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(InputFieldId::HostSearch, logical_x, 22.0, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::SidebarSearchSnippet => {
                 self.state.focused_input = Some(InputFieldId::SnippetSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(InputFieldId::SnippetSearch, logical_x, 22.0, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::SidebarSearchCommand => {
                 self.state.focused_input = Some(InputFieldId::CommandSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(InputFieldId::CommandSearch, logical_x, 22.0, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::HostConnect(idx) => {
@@ -396,19 +416,33 @@ impl EvertySshApp {
             HoverTarget::SettingsSecurityField(idx) => {
                 if let Some(m) = &mut self.state.settings_modal {
                     m.active_security_field = idx;
-                    self.state.focused_input = Some(InputFieldId::SettingsSecurity(idx));
-                    self.state.caret_visible = true;
-                    self.state.caret_blink_time = Instant::now();
                 }
+                self.state.focused_input = Some(InputFieldId::SettingsSecurity(idx));
+                self.state.caret_visible = true;
+                self.state.caret_blink_time = Instant::now();
+                let modal_w = 620.0f64.min(w - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let input_start_x = modal_x + 200.0;
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(InputFieldId::SettingsSecurity(idx), logical_x, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::SettingsGeneralField(idx) => {
                 if let Some(m) = &mut self.state.settings_modal {
                     m.active_general_field = idx;
-                    self.state.focused_input = Some(InputFieldId::SettingsGeneral(idx));
-                    self.state.caret_visible = true;
-                    self.state.caret_blink_time = Instant::now();
                 }
+                self.state.focused_input = Some(InputFieldId::SettingsGeneral(idx));
+                self.state.caret_visible = true;
+                self.state.caret_blink_time = Instant::now();
+                let modal_w = 620.0f64.min(w - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let input_start_x = modal_x + 250.0;
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(InputFieldId::SettingsGeneral(idx), logical_x, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::SettingsSavePassword => {
@@ -577,17 +611,20 @@ impl EvertySshApp {
                 self.request_redraw();
             }
             HoverTarget::ModalSnippetField(idx) => {
-                self.state.add_snippet_modal.active_field = idx;
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
                 let modal_w = 520.0f64.min(w - 40.0);
+                let modal_h = 420.0f64.min(h - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
+                let modal_y = (h - modal_h) / 2.0;
+                let f_y = modal_y + 55.0 + (idx as f64) * 58.0;
                 let input_start_x = modal_x + 34.0;
-                let click_offset_px = (logical_x - input_start_x).max(0.0);
-                let fid = InputFieldId::AddSnippet(idx);
-                if let Some(inp) = self.state.get_text_input_mut(fid) {
-                    inp.set_cursor_from_click(click_offset_px, 7.8);
-                }
+
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+
+                self.state.handle_snippet_field_click(idx, logical_x, logical_y, f_y, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::ModalSnippetSave => {
@@ -642,6 +679,14 @@ impl EvertySshApp {
             }
             HoverTarget::TerminalSearchInput => {
                 self.state.focused_input = Some(InputFieldId::TerminalSearch);
+                self.state.caret_visible = true;
+                self.state.caret_blink_time = Instant::now();
+                let input_start_x = w - 380.0 + 16.0;
+                let fid = InputFieldId::TerminalSearch;
+                let now = Instant::now();
+                let is_double_click = now.duration_since(self.last_click_time).as_millis() < 400;
+                self.last_click_time = now;
+                self.state.handle_input_click(fid, logical_x, input_start_x, is_double_click);
                 self.request_redraw();
             }
             HoverTarget::TerminalSplitBtn => {
@@ -658,18 +703,15 @@ impl EvertySshApp {
                     self.request_redraw();
                 }
             }
+            HoverTarget::ModalDialogBody => {
+                // Click within modal card background or text labels - do not close modal
+            }
             HoverTarget::None => {
                 if self.state.input_context_menu.is_some() {
                     self.state.input_context_menu = None;
                     self.request_redraw();
                 } else if self.state.session_dashboard_modal.is_some() {
                     self.state.session_dashboard_modal = None;
-                    self.request_redraw();
-                } else if self.state.add_snippet_modal.is_open {
-                    self.state.add_snippet_modal.is_open = false;
-                    self.request_redraw();
-                } else if self.state.add_host_modal.is_open {
-                    self.state.add_host_modal.is_open = false;
                     self.request_redraw();
                 } else if self.state.palette_open {
                     self.state.palette_open = false;
@@ -777,7 +819,11 @@ impl ApplicationHandler for EvertySshApp {
                 let w = (win_size.width as f64) / scale_factor;
                 let h = (win_size.height as f64) / scale_factor;
 
-                if self.state.is_dragging_sidebar {
+                if self.state.is_input_selecting {
+                    if self.state.update_input_selection(logical_x) {
+                        self.request_redraw();
+                    }
+                } else if self.state.is_dragging_sidebar {
                     let delta_x = logical_x - self.state.sidebar_drag_start_x;
                     let min_w = 200.0;
                     let max_w = (w * 0.55).max(250.0).min(550.0);
@@ -877,6 +923,9 @@ impl ApplicationHandler for EvertySshApp {
                         _ => {}
                     }
                 } else if state == ElementState::Released && button == MouseButton::Left {
+                    if self.state.end_input_selection() {
+                        self.request_redraw();
+                    }
                     if self.state.is_dragging_sidebar {
                         self.state.is_dragging_sidebar = false;
                         self.request_redraw();

@@ -47,6 +47,35 @@ impl TextInput {
         }
     }
 
+    pub fn select_word_at_cursor(&mut self) {
+        let chars: Vec<char> = self.text.chars().collect();
+        if chars.is_empty() {
+            self.selection = None;
+            self.cursor = 0;
+            return;
+        }
+        let pos = self.cursor.min(chars.len());
+        let anchor = if pos > 0 && (pos == chars.len() || chars[pos].is_whitespace()) {
+            pos - 1
+        } else {
+            pos
+        };
+        let mut start = anchor;
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        let mut end = anchor;
+        while end < chars.len() && !chars[end].is_whitespace() {
+            end += 1;
+        }
+        if start < end {
+            self.selection = Some((start, end));
+            self.cursor = end;
+        } else {
+            self.select_all();
+        }
+    }
+
     pub fn clear_selection(&mut self) {
         self.selection = None;
     }
@@ -624,6 +653,7 @@ pub struct AddSnippetModal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverTarget {
     None,
+    ModalDialogBody,
     HeaderTab(usize),
     HeaderTabClose(usize),
     HeaderAddBtn,
@@ -839,6 +869,12 @@ pub struct AppState {
     pub scrollbar_drag_start_y: f64,
     pub scrollbar_drag_start_offset: usize,
 
+    // Input Drag Selection
+    pub is_input_selecting: bool,
+    pub input_select_anchor: usize,
+    pub input_select_field: Option<InputFieldId>,
+    pub input_select_origin_x: f64,
+
     // Cached lists
     pub recent_sessions: Vec<SessionRecord>,
     pub snippets: Vec<SnippetRecord>,
@@ -907,6 +943,10 @@ impl AppState {
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_offset: 0,
+            is_input_selecting: false,
+            input_select_anchor: 0,
+            input_select_field: None,
+            input_select_origin_x: 0.0,
             recent_sessions,
             snippets,
             selected_sidebar_item: 0,
@@ -998,20 +1038,25 @@ impl AppState {
                 let modal_h = 210.0f64.min(h - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
-                let btn_y = modal_y + modal_h - 52.0;
 
-                if y >= btn_y && y <= btn_y + 36.0 {
-                    if x >= modal_x + modal_w - 240.0 && x <= modal_x + modal_w - 130.0 {
-                        new_hover = HoverTarget::ConfirmDeleteCancel;
-                        cursor = CursorIcon::Pointer;
-                    } else if x >= modal_x + modal_w - 120.0 && x <= modal_x + modal_w - 20.0 {
-                        new_hover = HoverTarget::ConfirmDeleteConfirm;
-                        cursor = CursorIcon::Pointer;
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                    new_hover = HoverTarget::ModalDialogBody;
+                    cursor = CursorIcon::Default;
+                    let btn_y = modal_y + modal_h - 52.0;
+
+                    if y >= btn_y && y <= btn_y + 36.0 {
+                        if x >= modal_x + modal_w - 240.0 && x <= modal_x + modal_w - 130.0 {
+                            new_hover = HoverTarget::ConfirmDeleteCancel;
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + modal_w - 120.0 && x <= modal_x + modal_w - 20.0 {
+                            new_hover = HoverTarget::ConfirmDeleteConfirm;
+                            cursor = CursorIcon::Pointer;
+                        }
                     }
+                    let changed = old_hover != new_hover;
+                    self.hover = new_hover;
+                    return (changed, cursor);
                 }
-                let changed = old_hover != new_hover;
-                self.hover = new_hover;
-                return (changed, cursor);
             }
         }
 
@@ -1022,28 +1067,33 @@ impl AppState {
                 let modal_h = (if confirm_run.is_dangerous { 310.0 } else { 270.0 } as f64).min(h - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
-                let btn_y = modal_y + modal_h - 52.0;
 
-                if y >= btn_y && y <= btn_y + 36.0 {
-                    // Cancel button
-                    if x >= modal_x + modal_w - 360.0 && x <= modal_x + modal_w - 260.0 {
-                        new_hover = HoverTarget::ConfirmRunCancel;
-                        cursor = CursorIcon::Pointer;
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                    new_hover = HoverTarget::ModalDialogBody;
+                    cursor = CursorIcon::Default;
+                    let btn_y = modal_y + modal_h - 52.0;
+
+                    if y >= btn_y && y <= btn_y + 36.0 {
+                        // Cancel button
+                        if x >= modal_x + modal_w - 360.0 && x <= modal_x + modal_w - 260.0 {
+                            new_hover = HoverTarget::ConfirmRunCancel;
+                            cursor = CursorIcon::Pointer;
+                        }
+                        // Copy button
+                        else if x >= modal_x + modal_w - 250.0 && x <= modal_x + modal_w - 140.0 {
+                            new_hover = HoverTarget::ConfirmRunCopy;
+                            cursor = CursorIcon::Pointer;
+                        }
+                        // Execute button
+                        else if x >= modal_x + modal_w - 130.0 && x <= modal_x + modal_w - 20.0 {
+                            new_hover = HoverTarget::ConfirmRunExecute;
+                            cursor = if confirm_run.can_execute { CursorIcon::Pointer } else { CursorIcon::NotAllowed };
+                        }
                     }
-                    // Copy button
-                    else if x >= modal_x + modal_w - 250.0 && x <= modal_x + modal_w - 140.0 {
-                        new_hover = HoverTarget::ConfirmRunCopy;
-                        cursor = CursorIcon::Pointer;
-                    }
-                    // Execute button
-                    else if x >= modal_x + modal_w - 130.0 && x <= modal_x + modal_w - 20.0 {
-                        new_hover = HoverTarget::ConfirmRunExecute;
-                        cursor = if confirm_run.can_execute { CursorIcon::Pointer } else { CursorIcon::NotAllowed };
-                    }
+                    let changed = old_hover != new_hover;
+                    self.hover = new_hover;
+                    return (changed, cursor);
                 }
-                let changed = old_hover != new_hover;
-                self.hover = new_hover;
-                return (changed, cursor);
             }
         }
 
@@ -1055,114 +1105,119 @@ impl AppState {
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
-                // Close button
-                if x >= modal_x + modal_w - 38.0 && x <= modal_x + modal_w - 14.0 && y >= modal_y + 14.0 && y <= modal_y + 38.0 {
-                    new_hover = HoverTarget::SettingsClose;
-                    cursor = CursorIcon::Pointer;
-                }
-                // Tabs
-                else if y >= modal_y + 55.0 && y <= modal_y + 88.0 {
-                    if x >= modal_x + 24.0 && x <= modal_x + 160.0 {
-                        new_hover = HoverTarget::SettingsTab(SettingsTab::Security);
-                        cursor = CursorIcon::Pointer;
-                    } else if x >= modal_x + 165.0 && x <= modal_x + 310.0 {
-                        new_hover = HoverTarget::SettingsTab(SettingsTab::Backup);
-                        cursor = CursorIcon::Pointer;
-                    } else if x >= modal_x + 315.0 && x <= modal_x + 450.0 {
-                        new_hover = HoverTarget::SettingsTab(SettingsTab::General);
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                    new_hover = HoverTarget::ModalDialogBody;
+                    cursor = CursorIcon::Default;
+
+                    // Close button
+                    if x >= modal_x + modal_w - 38.0 && x <= modal_x + modal_w - 14.0 && y >= modal_y + 14.0 && y <= modal_y + 38.0 {
+                        new_hover = HoverTarget::SettingsClose;
                         cursor = CursorIcon::Pointer;
                     }
-                }
-                // Tab content
-                else {
-                    match settings.active_tab {
-                        SettingsTab::Security => {
-                            let f_y_base = modal_y + 155.0;
-                            let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
-                            let start_field = if has_existing { 0 } else { 1 };
-                            let end_field = 3;
+                    // Tabs
+                    else if y >= modal_y + 55.0 && y <= modal_y + 88.0 {
+                        if x >= modal_x + 24.0 && x <= modal_x + 160.0 {
+                            new_hover = HoverTarget::SettingsTab(SettingsTab::Security);
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + 165.0 && x <= modal_x + 310.0 {
+                            new_hover = HoverTarget::SettingsTab(SettingsTab::Backup);
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + 315.0 && x <= modal_x + 450.0 {
+                            new_hover = HoverTarget::SettingsTab(SettingsTab::General);
+                            cursor = CursorIcon::Pointer;
+                        }
+                    }
+                    // Tab content
+                    else {
+                        match settings.active_tab {
+                            SettingsTab::Security => {
+                                let f_y_base = modal_y + 155.0;
+                                let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
+                                let start_field = if has_existing { 0 } else { 1 };
+                                let end_field = 3;
 
-                            let mut cy = f_y_base;
-                            for f_idx in start_field..end_field {
-                                if x >= modal_x + 190.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
-                                    new_hover = HoverTarget::SettingsSecurityField(f_idx);
-                                    cursor = CursorIcon::Text;
-                                    break;
+                                let mut cy = f_y_base;
+                                for f_idx in start_field..end_field {
+                                    if x >= modal_x + 190.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                        new_hover = HoverTarget::SettingsSecurityField(f_idx);
+                                        cursor = CursorIcon::Text;
+                                        break;
+                                    }
+                                    cy += 44.0;
                                 }
-                                cy += 44.0;
-                            }
 
-                            if new_hover == HoverTarget::None {
-                                let btn_y = modal_y + modal_h - 52.0;
-                                if y >= btn_y && y <= btn_y + 34.0 {
-                                    if has_existing {
-                                        if x >= modal_x + modal_w - 320.0 && x <= modal_x + modal_w - 170.0 {
-                                            new_hover = HoverTarget::SettingsRemovePassword;
-                                            cursor = CursorIcon::Pointer;
-                                        } else if x >= modal_x + modal_w - 160.0 && x <= modal_x + modal_w - 24.0 {
-                                            new_hover = HoverTarget::SettingsSavePassword;
-                                            cursor = CursorIcon::Pointer;
-                                        }
-                                    } else {
-                                        if x >= modal_x + modal_w - 180.0 && x <= modal_x + modal_w - 24.0 {
-                                            new_hover = HoverTarget::SettingsSavePassword;
-                                            cursor = CursorIcon::Pointer;
+                                if new_hover == HoverTarget::ModalDialogBody {
+                                    let btn_y = modal_y + modal_h - 52.0;
+                                    if y >= btn_y && y <= btn_y + 34.0 {
+                                        if has_existing {
+                                            if x >= modal_x + modal_w - 320.0 && x <= modal_x + modal_w - 170.0 {
+                                                new_hover = HoverTarget::SettingsRemovePassword;
+                                                cursor = CursorIcon::Pointer;
+                                            } else if x >= modal_x + modal_w - 160.0 && x <= modal_x + modal_w - 24.0 {
+                                                new_hover = HoverTarget::SettingsSavePassword;
+                                                cursor = CursorIcon::Pointer;
+                                            }
+                                        } else {
+                                            if x >= modal_x + modal_w - 180.0 && x <= modal_x + modal_w - 24.0 {
+                                                new_hover = HoverTarget::SettingsSavePassword;
+                                                cursor = CursorIcon::Pointer;
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        SettingsTab::Backup => {
-                            let exp_y = modal_y + 130.0;
-                            let imp_y = modal_y + 240.0;
-                            if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= exp_y && y <= exp_y + 36.0 {
-                                new_hover = HoverTarget::SettingsExportJson;
-                                cursor = CursorIcon::Pointer;
-                            } else if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= imp_y && y <= imp_y + 36.0 {
-                                new_hover = HoverTarget::SettingsImportJson;
-                                cursor = CursorIcon::Pointer;
-                            }
-                        }
-                        SettingsTab::General => {
-                            let lang_y = modal_y + 105.0;
-                            if y >= lang_y && y <= lang_y + 30.0 {
-                                if x >= modal_x + 240.0 && x <= modal_x + 340.0 {
-                                    new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::Ru);
+                            SettingsTab::Backup => {
+                                let exp_y = modal_y + 130.0;
+                                let imp_y = modal_y + 240.0;
+                                if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= exp_y && y <= exp_y + 36.0 {
+                                    new_hover = HoverTarget::SettingsExportJson;
                                     cursor = CursorIcon::Pointer;
-                                } else if x >= modal_x + 350.0 && x <= modal_x + 450.0 {
-                                    new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::En);
+                                } else if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= imp_y && y <= imp_y + 36.0 {
+                                    new_hover = HoverTarget::SettingsImportJson;
                                     cursor = CursorIcon::Pointer;
                                 }
                             }
+                            SettingsTab::General => {
+                                let lang_y = modal_y + 105.0;
+                                if y >= lang_y && y <= lang_y + 30.0 {
+                                    if x >= modal_x + 240.0 && x <= modal_x + 340.0 {
+                                        new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::Ru);
+                                        cursor = CursorIcon::Pointer;
+                                    } else if x >= modal_x + 350.0 && x <= modal_x + 450.0 {
+                                        new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::En);
+                                        cursor = CursorIcon::Pointer;
+                                    }
+                                }
 
-                            let mut cy = modal_y + 150.0;
-                            for f_idx in 0..2 {
-                                if x >= modal_x + 240.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
-                                    new_hover = HoverTarget::SettingsGeneralField(f_idx);
-                                    cursor = CursorIcon::Text;
-                                    break;
+                                let mut cy = modal_y + 150.0;
+                                for f_idx in 0..2 {
+                                    if x >= modal_x + 240.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                        new_hover = HoverTarget::SettingsGeneralField(f_idx);
+                                        cursor = CursorIcon::Text;
+                                        break;
+                                    }
+                                    cy += 45.0;
                                 }
-                                cy += 45.0;
-                            }
-                            if new_hover == HoverTarget::None {
-                                // Checkbox confirm delete
-                                if x >= modal_x + 24.0 && x <= modal_x + 420.0 && y >= cy && y <= cy + 28.0 {
-                                    new_hover = HoverTarget::SettingsToggleConfirmDelete;
-                                    cursor = CursorIcon::Pointer;
-                                }
-                                let btn_y = modal_y + modal_h - 52.0;
-                                if x >= modal_x + modal_w - 190.0 && x <= modal_x + modal_w - 24.0 && y >= btn_y && y <= btn_y + 34.0 {
-                                    new_hover = HoverTarget::SettingsSaveGeneral;
-                                    cursor = CursorIcon::Pointer;
+                                if new_hover == HoverTarget::ModalDialogBody {
+                                    // Checkbox confirm delete
+                                    if x >= modal_x + 24.0 && x <= modal_x + 420.0 && y >= cy && y <= cy + 28.0 {
+                                        new_hover = HoverTarget::SettingsToggleConfirmDelete;
+                                        cursor = CursorIcon::Pointer;
+                                    }
+                                    let btn_y = modal_y + modal_h - 52.0;
+                                    if x >= modal_x + modal_w - 190.0 && x <= modal_x + modal_w - 24.0 && y >= btn_y && y <= btn_y + 34.0 {
+                                        new_hover = HoverTarget::SettingsSaveGeneral;
+                                        cursor = CursorIcon::Pointer;
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                let changed = old_hover != new_hover;
-                self.hover = new_hover;
-                return (changed, cursor);
+                    let changed = old_hover != new_hover;
+                    self.hover = new_hover;
+                    return (changed, cursor);
+                }
             }
         }
 
@@ -1221,6 +1276,9 @@ impl AppState {
                 let modal_y = (h - modal_h) / 2.0;
 
                 if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                    new_hover = HoverTarget::ModalDialogBody;
+                    cursor = CursorIcon::Default;
+
                     if x >= modal_x + modal_w - 40.0 && y <= modal_y + 40.0 {
                         new_hover = HoverTarget::SessionDashboardClose;
                         cursor = CursorIcon::Pointer;
@@ -1264,18 +1322,21 @@ impl AppState {
             let modal_y = (h - modal_h) / 2.0;
 
             if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                new_hover = HoverTarget::ModalDialogBody;
+                cursor = CursorIcon::Default;
+
                 if x >= modal_x + modal_w - 40.0 && y <= modal_y + 40.0 {
                     new_hover = HoverTarget::ModalSnippetClose;
                     cursor = CursorIcon::Pointer;
                 } else {
-                    let mut f_y = modal_y + 60.0;
+                    let mut f_y = modal_y + 55.0;
                     for idx in 0..4 {
-                        if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 34.0 {
+                        if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 52.0 {
                             new_hover = HoverTarget::ModalSnippetField(idx);
                             cursor = CursorIcon::Text;
                             break;
                         }
-                        f_y += 62.0;
+                        f_y += 58.0;
                     }
 
                     let btn_y = modal_y + modal_h - 48.0;
@@ -1303,6 +1364,9 @@ impl AppState {
             let modal_y = (h - modal_h) / 2.0;
 
             if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                new_hover = HoverTarget::ModalDialogBody;
+                cursor = CursorIcon::Default;
+
                 if x >= modal_x + modal_w - 40.0 && y <= modal_y + 40.0 {
                     new_hover = HoverTarget::KeyToolCloseBtn;
                     cursor = CursorIcon::Pointer;
@@ -1370,6 +1434,9 @@ impl AppState {
             let modal_y = (h - modal_h) / 2.0;
 
             if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                new_hover = HoverTarget::ModalDialogBody;
+                cursor = CursorIcon::Default;
+
                 // Close button
                 if x >= modal_x + modal_w - 40.0 && y <= modal_y + 40.0 {
                     new_hover = HoverTarget::ModalClose;
@@ -1378,7 +1445,7 @@ impl AppState {
                     // Fields
                     let mut f_y = modal_y + 60.0;
                     for idx in 0..5 {
-                        if x >= modal_x + 160.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                        if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
                             new_hover = HoverTarget::ModalField(idx);
                             cursor = CursorIcon::Text;
                         }
@@ -1401,7 +1468,7 @@ impl AppState {
                     if self.add_host_modal.auth_mode != AuthModeChoice::Agent {
                         if self.add_host_modal.auth_mode == AuthModeChoice::Key {
                             let input_w = modal_w - 160.0 - 180.0;
-                            if x >= modal_x + 160.0 && x <= modal_x + 160.0 + input_w && y >= f_y && y <= f_y + 32.0 {
+                            if x >= modal_x + 24.0 && x <= modal_x + 160.0 + input_w && y >= f_y && y <= f_y + 32.0 {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
                             } else if x >= modal_x + modal_w - 170.0 && x <= modal_x + modal_w - 96.0 && y >= f_y && y <= f_y + 32.0 {
@@ -1412,7 +1479,7 @@ impl AppState {
                                 cursor = CursorIcon::Pointer;
                             }
                         } else {
-                            if x >= modal_x + 160.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                            if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
                             }
@@ -1907,6 +1974,118 @@ impl AppState {
             || self.settings_modal.as_ref().map_or(false, |m| m.is_open)
             || self.palette_open
             || self.search_state.is_open
+    }
+
+    pub fn start_input_selection(&mut self, fid: InputFieldId, anchor: usize, origin_x: f64) {
+        self.is_input_selecting = true;
+        self.input_select_anchor = anchor;
+        self.input_select_field = Some(fid);
+        self.input_select_origin_x = origin_x;
+    }
+
+    pub fn update_input_selection(&mut self, current_x: f64) -> bool {
+        if !self.is_input_selecting {
+            return false;
+        }
+        let fid = match self.input_select_field {
+            Some(f) => f,
+            None => return false,
+        };
+        let anchor = self.input_select_anchor;
+        let origin_x = self.input_select_origin_x;
+        if let Some(inp) = self.get_text_input_mut(fid) {
+            let click_offset_px = (current_x - origin_x).max(0.0);
+            let approx_char_w = 7.8;
+            let total_chars = inp.text.chars().count();
+            let clicked_char = (click_offset_px / approx_char_w).round().max(0.0) as usize;
+            let current_cursor = (inp.scroll_offset + clicked_char).min(total_chars);
+
+            let mut changed = false;
+            if inp.cursor != current_cursor {
+                inp.cursor = current_cursor;
+                changed = true;
+            }
+            let new_sel = if current_cursor != anchor {
+                Some((anchor, current_cursor))
+            } else {
+                None
+            };
+            if inp.selection != new_sel {
+                inp.selection = new_sel;
+                changed = true;
+            }
+            if changed {
+                self.caret_visible = true;
+            }
+            changed
+        } else {
+            false
+        }
+    }
+
+    pub fn end_input_selection(&mut self) -> bool {
+        if self.is_input_selecting {
+            self.is_input_selecting = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn handle_input_click(
+        &mut self,
+        fid: InputFieldId,
+        logical_x: f64,
+        input_start_x: f64,
+        is_double_click: bool,
+    ) {
+        let anchor = if let Some(inp) = self.get_text_input_mut(fid) {
+            if is_double_click {
+                inp.select_word_at_cursor();
+                None
+            } else {
+                let click_offset_px = (logical_x - input_start_x).max(0.0);
+                inp.set_cursor_from_click(click_offset_px, 7.8);
+                Some(inp.cursor)
+            }
+        } else {
+            None
+        };
+        if let Some(cur) = anchor {
+            self.start_input_selection(fid, cur, input_start_x);
+        }
+    }
+
+    pub fn handle_snippet_field_click(
+        &mut self,
+        idx: usize,
+        logical_x: f64,
+        logical_y: f64,
+        label_y: f64,
+        input_start_x: f64,
+        is_double_click: bool,
+    ) {
+        self.add_snippet_modal.active_field = idx;
+        let fid = InputFieldId::AddSnippet(idx);
+        let anchor = if let Some(inp) = self.get_text_input_mut(fid) {
+            if is_double_click {
+                inp.select_word_at_cursor();
+                None
+            } else if logical_y < label_y + 18.0 {
+                inp.cursor = inp.text.chars().count();
+                inp.clear_selection();
+                Some(inp.cursor)
+            } else {
+                let click_offset_px = (logical_x - input_start_x).max(0.0);
+                inp.set_cursor_from_click(click_offset_px, 7.8);
+                Some(inp.cursor)
+            }
+        } else {
+            None
+        };
+        if let Some(cur) = anchor {
+            self.start_input_selection(fid, cur, input_start_x);
+        }
     }
 
     pub fn active_field_id(&self) -> Option<InputFieldId> {
@@ -3511,5 +3690,67 @@ mod tests {
         // Clicking at 100px from left
         inp.set_cursor_from_click(100.0, 10.0);
         assert_eq!(inp.cursor, 4 + 10); // scroll_offset (4) + 10 chars
+    }
+
+    #[test]
+    fn test_text_input_selection_and_drag() {
+        let mut inp = TextInput::new("systemctl restart nginx");
+        inp.cursor = 10;
+        inp.select_word_at_cursor();
+        assert_eq!(inp.selected_text(), Some("restart".to_string()));
+
+        // Test drag selection simulation
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.add_snippet_modal.is_open = true;
+        app.add_snippet_modal.command.set("sudo systemctl status docker");
+
+        // Click at character index 5 ("systemctl...")
+        let input_origin_x = 100.0;
+        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 5.0 * 7.8, input_origin_x, false);
+        assert!(app.is_input_selecting);
+        assert_eq!(app.add_snippet_modal.command.cursor, 5);
+
+        // Drag to character index 14
+        let changed = app.update_input_selection(input_origin_x + 14.0 * 7.8);
+        assert!(changed);
+        assert_eq!(app.add_snippet_modal.command.cursor, 14);
+        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
+
+        // End drag selection
+        let ended = app.end_input_selection();
+        assert!(ended);
+        assert!(!app.is_input_selecting);
+        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
+    }
+
+    #[test]
+    fn test_modal_snippet_hit_testing_stability() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.add_snippet_modal.is_open = true;
+
+        let w = 1120.0;
+        let h = 720.0;
+        let modal_w = 520.0;
+        let modal_h = 420.0;
+        let modal_x = (w - modal_w) / 2.0; // 300.0
+        let modal_y = (h - modal_h) / 2.0; // 150.0
+
+        // 1. Hover on first field label ("Название:" at modal_y + 55 = 205.0)
+        let (_, _) = app.update_hover(modal_x + 30.0, modal_y + 60.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ModalSnippetField(0));
+
+        // 2. Hover inside first field input box (modal_y + 75 = 225.0)
+        let (_, _) = app.update_hover(modal_x + 30.0, modal_y + 80.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ModalSnippetField(0));
+
+        // 3. Hover on modal title or card background (not a field or button)
+        let (_, _) = app.update_hover(modal_x + 30.0, modal_y + 20.0, w, h);
+        assert_eq!(app.hover, HoverTarget::ModalDialogBody);
+
+        // 4. Hover outside modal entirely
+        let (_, _) = app.update_hover(10.0, 10.0, w, h);
+        assert_eq!(app.hover, HoverTarget::None);
     }
 }
