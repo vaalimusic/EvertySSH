@@ -508,6 +508,32 @@ pub fn percent_encode(s: &str) -> String {
     encoded
 }
 
+pub fn open_browser_url(url: &str) {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", trimmed])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(trimmed)
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn();
+    }
+}
+
 pub fn open_google_search(query: &str) {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -515,25 +541,7 @@ pub fn open_google_search(query: &str) {
     }
     let encoded = percent_encode(trimmed);
     let url = format!("https://www.google.com/search?q={}", encoded);
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", &url])
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open")
-            .arg(&url)
-            .spawn();
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&url)
-            .spawn();
-    }
+    open_browser_url(&url);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -868,6 +876,7 @@ pub fn check_dangerous_command(cmd: &str) -> (bool, Option<String>) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
+    About,
     Security,
     Backup,
     General,
@@ -995,6 +1004,10 @@ pub enum HoverTarget {
     ConfirmDeleteCancel,
     SettingsClose,
     SettingsTab(SettingsTab),
+    SettingsAboutLinkDesk,
+    SettingsAboutLinkEmail,
+    SettingsAboutLinkTelegram,
+    SettingsAboutLinkGithub,
     SettingsSavePassword,
     SettingsRemovePassword,
     SettingsExportJson,
@@ -1508,13 +1521,16 @@ impl AppState {
                     }
                     // Tabs
                     else if y >= modal_y + 55.0 && y <= modal_y + 88.0 {
-                        if x >= modal_x + 24.0 && x <= modal_x + 160.0 {
+                        if x >= modal_x + 24.0 && x <= modal_x + 134.0 {
+                            new_hover = HoverTarget::SettingsTab(SettingsTab::About);
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + 140.0 && x <= modal_x + 275.0 {
                             new_hover = HoverTarget::SettingsTab(SettingsTab::Security);
                             cursor = CursorIcon::Pointer;
-                        } else if x >= modal_x + 165.0 && x <= modal_x + 310.0 {
+                        } else if x >= modal_x + 281.0 && x <= modal_x + 426.0 {
                             new_hover = HoverTarget::SettingsTab(SettingsTab::Backup);
                             cursor = CursorIcon::Pointer;
-                        } else if x >= modal_x + 315.0 && x <= modal_x + 450.0 {
+                        } else if x >= modal_x + 432.0 && x <= modal_x + 562.0 {
                             new_hover = HoverTarget::SettingsTab(SettingsTab::General);
                             cursor = CursorIcon::Pointer;
                         }
@@ -1522,6 +1538,32 @@ impl AppState {
                     // Tab content
                     else {
                         match settings.active_tab {
+                            SettingsTab::About => {
+                                let c1_x = modal_x + 24.0;
+                                let c2_x = modal_x + 316.0;
+                                let c_w = 276.0;
+                                let r1_y = modal_y + 244.0;
+                                let r2_y = modal_y + 308.0;
+                                let c_h = 54.0;
+
+                                if y >= r1_y && y <= r1_y + c_h {
+                                    if x >= c1_x && x <= c1_x + c_w {
+                                        new_hover = HoverTarget::SettingsAboutLinkDesk;
+                                        cursor = CursorIcon::Pointer;
+                                    } else if x >= c2_x && x <= c2_x + c_w {
+                                        new_hover = HoverTarget::SettingsAboutLinkTelegram;
+                                        cursor = CursorIcon::Pointer;
+                                    }
+                                } else if y >= r2_y && y <= r2_y + c_h {
+                                    if x >= c1_x && x <= c1_x + c_w {
+                                        new_hover = HoverTarget::SettingsAboutLinkEmail;
+                                        cursor = CursorIcon::Pointer;
+                                    } else if x >= c2_x && x <= c2_x + c_w {
+                                        new_hover = HoverTarget::SettingsAboutLinkGithub;
+                                        cursor = CursorIcon::Pointer;
+                                    }
+                                }
+                            }
                             SettingsTab::Security => {
                                 let f_y_base = modal_y + 155.0;
                                 let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
@@ -1564,12 +1606,12 @@ impl AppState {
                                 }
                             }
                             SettingsTab::Backup => {
-                                let exp_y = modal_y + 130.0;
-                                let imp_y = modal_y + 240.0;
-                                if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= exp_y && y <= exp_y + 36.0 {
+                                let exp_y = modal_y + 164.0;
+                                let imp_y = modal_y + 274.0;
+                                if x >= modal_x + 38.0 && x <= modal_x + 238.0 && y >= exp_y && y <= exp_y + 30.0 {
                                     new_hover = HoverTarget::SettingsExportJson;
                                     cursor = CursorIcon::Pointer;
-                                } else if x >= modal_x + 30.0 && x <= modal_x + 230.0 && y >= imp_y && y <= imp_y + 36.0 {
+                                } else if x >= modal_x + 38.0 && x <= modal_x + 238.0 && y >= imp_y && y <= imp_y + 30.0 {
                                     new_hover = HoverTarget::SettingsImportJson;
                                     cursor = CursorIcon::Pointer;
                                 }
@@ -3127,7 +3169,7 @@ impl AppState {
         let init_sec_field = if has_existing { 0 } else { 1 };
         self.settings_modal = Some(SettingsModal {
             is_open: true,
-            active_tab: SettingsTab::Security,
+            active_tab: SettingsTab::About,
             current_password: TextInput::default(),
             new_password: TextInput::default(),
             confirm_password: TextInput::default(),
@@ -3141,7 +3183,7 @@ impl AppState {
             general_msg: None,
             show_passwords: false,
         });
-        self.focused_input = Some(InputFieldId::SettingsSecurity(init_sec_field));
+        self.focused_input = None;
     }
 
     pub fn toggle_language(&mut self) {
@@ -4040,7 +4082,22 @@ impl AppState {
             HoverTarget::HostKeyModalCopy => std::borrow::Cow::Borrowed(tr(lang, "Скопировать отпечаток (fingerprint) в буфер", "Copy fingerprint to clipboard")),
             HoverTarget::ConfirmDeleteConfirm => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
             HoverTarget::ConfirmDeleteCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
+            HoverTarget::HeaderTab(idx) => {
+                if let Some(tab) = self.tabs.get(idx) {
+                    std::borrow::Cow::Owned(format!("{}: {}", tab.title, tab.status))
+                } else {
+                    return None;
+                }
+            }
             HoverTarget::SettingsClose => std::borrow::Cow::Borrowed(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
+            HoverTarget::SettingsTab(SettingsTab::About) => std::borrow::Cow::Borrowed(tr(lang, "Информация о программе и разработчике", "About program and developer")),
+            HoverTarget::SettingsTab(SettingsTab::Security) => std::borrow::Cow::Borrowed(tr(lang, "Настройки безопасности и мастер-пароля", "Security & master password settings")),
+            HoverTarget::SettingsTab(SettingsTab::Backup) => std::borrow::Cow::Borrowed(tr(lang, "Резервное копирование и экспорт хостов", "Backup & export hosts")),
+            HoverTarget::SettingsTab(SettingsTab::General) => std::borrow::Cow::Borrowed(tr(lang, "Общие параметры и настройки интерфейса", "General options and interface settings")),
+            HoverTarget::SettingsAboutLinkDesk => std::borrow::Cow::Borrowed(tr(lang, "Открыть сайт desk.everty.ru", "Open desk.everty.ru website")),
+            HoverTarget::SettingsAboutLinkEmail => std::borrow::Cow::Borrowed(tr(lang, "Написать на info@everty.ru (копировать адрес)", "Write to info@everty.ru (copy address)")),
+            HoverTarget::SettingsAboutLinkTelegram => std::borrow::Cow::Borrowed(tr(lang, "Открыть Telegram канал: @Everty_web", "Open Telegram channel: @Everty_web")),
+            HoverTarget::SettingsAboutLinkGithub => std::borrow::Cow::Borrowed(tr(lang, "Репозиторий EvertySSH на GitHub", "EvertySSH GitHub repository")),
             HoverTarget::SettingsSavePassword => std::borrow::Cow::Borrowed(tr(lang, "Сохранить настройки мастер-пароля", "Save master password settings")),
             HoverTarget::SettingsRemovePassword => std::borrow::Cow::Borrowed(tr(lang, "Отключить защиту паролем", "Disable password protection")),
             HoverTarget::SettingsExportJson => std::borrow::Cow::Borrowed(tr(lang, "Экспортировать серверы и настройки в JSON файл", "Export servers & settings to JSON")),
@@ -4696,5 +4753,55 @@ mod tests {
         // Outside buttons but inside modal
         let (_, _) = app.update_hover(layout.modal_x + 10.0, layout.modal_y + 10.0, w, h);
         assert_eq!(app.hover, HoverTarget::ModalDialogBody);
+    }
+
+    #[test]
+    fn test_settings_about_tab_hit_testing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.open_settings_modal();
+        assert!(app.settings_modal.is_some());
+        let modal = app.settings_modal.as_ref().unwrap();
+        assert_eq!(modal.active_tab, SettingsTab::About);
+
+        let w = 1000.0;
+        let h = 700.0;
+        let modal_w = 620.0f64.min(w - 40.0);
+        let modal_h = 490.0f64.min(h - 40.0);
+        let modal_x = (w - modal_w) / 2.0;
+        let modal_y = (h - modal_h) / 2.0;
+
+        // Hover About tab
+        let (_, _) = app.update_hover(modal_x + 50.0, modal_y + 70.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsTab(SettingsTab::About));
+
+        // Hover Desk link card
+        let (_, _) = app.update_hover(modal_x + 50.0, modal_y + 260.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsAboutLinkDesk);
+
+        // Hover Telegram link card
+        let (_, _) = app.update_hover(modal_x + 350.0, modal_y + 260.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsAboutLinkTelegram);
+
+        // Hover Email link card
+        let (_, _) = app.update_hover(modal_x + 50.0, modal_y + 320.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsAboutLinkEmail);
+
+        // Hover GitHub link card
+        let (_, _) = app.update_hover(modal_x + 350.0, modal_y + 320.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsAboutLinkGithub);
+
+        // Switch to Backup tab
+        if let Some(m) = &mut app.settings_modal {
+            m.active_tab = SettingsTab::Backup;
+        }
+
+        // Hover Export JSON button (modal_x + 38..238, modal_y + 164..194)
+        let (_, _) = app.update_hover(modal_x + 100.0, modal_y + 175.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsExportJson);
+
+        // Hover Import JSON button (modal_x + 38..238, modal_y + 274..304)
+        let (_, _) = app.update_hover(modal_x + 100.0, modal_y + 285.0, w, h);
+        assert_eq!(app.hover, HoverTarget::SettingsImportJson);
     }
 }

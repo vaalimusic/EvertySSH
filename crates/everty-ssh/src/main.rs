@@ -10,7 +10,7 @@ use winit::dpi::PhysicalSize as WinitPhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 pub mod app;
 pub mod config;
@@ -21,7 +21,7 @@ pub mod terminal;
 pub mod ui;
 
 use app::{
-    open_google_search, AppState, AuthModeChoice, ContextMenuItem, HoverTarget, InputFieldId,
+    open_browser_url, open_google_search, AppState, AuthModeChoice, ContextMenuItem, HoverTarget, InputFieldId,
     KeyAlgo, SettingsTab, TerminalSelection,
 };
 use ui::UiRenderer;
@@ -37,6 +37,7 @@ struct EvertySshApp {
     last_click_time: Instant,
     click_count: usize,
     last_render_size: (u32, u32),
+    current_cursor: CursorIcon,
 }
 
 impl EvertySshApp {
@@ -52,6 +53,7 @@ impl EvertySshApp {
             last_click_time: Instant::now(),
             click_count: 0,
             last_render_size: (0, 0),
+            current_cursor: CursorIcon::Default,
         }
     }
 
@@ -427,8 +429,37 @@ impl EvertySshApp {
             HoverTarget::SettingsTab(tab) => {
                 if let Some(m) = &mut self.state.settings_modal {
                     m.active_tab = tab;
+                    match tab {
+                        SettingsTab::Security => {
+                            let has_existing = self.state.hosts_doc.settings.master_password_hash.is_some();
+                            let init_sec = if has_existing { 0 } else { 1 };
+                            m.active_security_field = init_sec;
+                            self.state.focused_input = Some(InputFieldId::SettingsSecurity(init_sec));
+                        }
+                        SettingsTab::General => {
+                            self.state.focused_input = Some(InputFieldId::SettingsGeneral(m.active_general_field));
+                        }
+                        _ => {
+                            self.state.focused_input = None;
+                        }
+                    }
                 }
                 self.request_redraw();
+            }
+            HoverTarget::SettingsAboutLinkDesk => {
+                open_browser_url("https://desk.everty.ru");
+            }
+            HoverTarget::SettingsAboutLinkEmail => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text("info@everty.ru");
+                }
+                open_browser_url("mailto:info@everty.ru");
+            }
+            HoverTarget::SettingsAboutLinkTelegram => {
+                open_browser_url("https://t.me/Everty_web");
+            }
+            HoverTarget::SettingsAboutLinkGithub => {
+                open_browser_url("https://github.com/vaalimusic/EvertySSH");
             }
             HoverTarget::SettingsSecurityField(idx) => {
                 if let Some(m) = &mut self.state.settings_modal {
@@ -889,8 +920,11 @@ impl ApplicationHandler for EvertySshApp {
                 }
 
                 let (changed, cursor_icon) = self.state.update_hover(logical_x, logical_y, w, h);
-                if let Some(win) = &self.window {
-                    win.set_cursor(cursor_icon);
+                if self.current_cursor != cursor_icon {
+                    self.current_cursor = cursor_icon;
+                    if let Some(win) = &self.window {
+                        win.set_cursor(cursor_icon);
+                    }
                 }
                 if changed {
                     self.request_redraw();

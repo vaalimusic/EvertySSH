@@ -1112,13 +1112,15 @@ impl UiRenderer {
                 4.0,
             );
 
-            let max_title_w = (tab_w - 48.0).max(10.0);
-            let title_layout = self.shape_cached(&tab.title, StyleId::Sans, Some(LogicalPx(max_title_w)));
+            let max_title_w = (tab_w - 50.0).max(10.0);
+            let title_layout = self.shape_clamped_cached(&tab.title, StyleId::Sans, LogicalPx(max_title_w), 1);
+            builder.push_clip(LogicalRect::from_xywh(tab_x + 22.0, 7.0, max_title_w + 2.0, 30.0));
             builder.text(
                 LogicalPoint::new(tab_x + 24.0, 13.0),
                 title_layout,
                 if is_active { text_main } else { text_dim },
             );
+            let _ = builder.pop_clip();
 
             // Tab Close '×' with vector icon & hover badge
             let close_rect = LogicalRect::from_xywh(tab_x + tab_w - 24.0, 12.0, 18.0, 18.0);
@@ -1308,23 +1310,28 @@ impl UiRenderer {
                             2.0,
                         );
 
-                        let max_title_w = (sidebar_w - 140.0).max(40.0);
-                        let name_layout = self.shape_cached(&host.name, StyleId::SansBold, Some(LogicalPx(max_title_w)));
+                        let max_title_w = (sidebar_w - 130.0).max(30.0);
+                        let name_layout = self.shape_clamped_cached(&host.name, StyleId::SansBold, LogicalPx(max_title_w), 1);
                         let name_w = name_layout.metrics.size.width.0;
+                        builder.push_clip(LogicalRect::from_xywh(20.0, item_y + 4.0, max_title_w + 4.0, 22.0));
                         builder.text(LogicalPoint::new(22.0, item_y + 8.0), name_layout, text_main);
+                        let _ = builder.pop_clip();
 
                         if let Some(grp) = &host.group {
-                            if !grp.is_empty() && name_w + 22.0 + 50.0 < sidebar_w - 128.0 {
+                            if !grp.is_empty() && name_w + 22.0 + 40.0 < sidebar_w - 128.0 {
+                                let max_grp_w = (sidebar_w - 128.0 - (name_w + 22.0 + 6.0)).max(20.0);
                                 let grp_str = format!("[{}]", grp);
-                                let grp_layout = self.shape_cached(&grp_str, StyleId::Small, None);
+                                let grp_layout = self.shape_clamped_cached(&grp_str, StyleId::Small, LogicalPx(max_grp_w), 1);
                                 builder.text(LogicalPoint::new(22.0 + name_w + 6.0, item_y + 9.0), grp_layout, Color::rgba(148, 163, 184, 200));
                             }
                         }
 
-                        let max_sub_w = (sidebar_w - 130.0).max(40.0);
+                        let max_sub_w = (sidebar_w - 130.0).max(30.0);
                         let sub_str = format!("{}@{}:{}", host.username, host.hostname, host.port);
-                        let sub_layout = self.shape_cached(&sub_str, StyleId::Small, Some(LogicalPx(max_sub_w)));
+                        let sub_layout = self.shape_clamped_cached(&sub_str, StyleId::Small, LogicalPx(max_sub_w), 1);
+                        builder.push_clip(LogicalRect::from_xywh(20.0, item_y + 26.0, max_sub_w + 4.0, 22.0));
                         builder.text(LogicalPoint::new(22.0, item_y + 28.0), sub_layout, text_dim);
+                        let _ = builder.pop_clip();
 
                         // 1. Quick Connect Button (Play Vector Icon)
                         let conn_rect = LogicalRect::from_xywh(sidebar_w - 118.0, item_y + 16.0, 24.0, 24.0);
@@ -3122,12 +3129,13 @@ impl UiRenderer {
                     builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(modal_x + modal_w - 33.0, modal_y + 19.0, 14.0, 14.0), text_muted);
                 }
 
-                // Tabs: 🔒 Безопасность | 💾 Резервная копия | ⚙ Параметры
+                // Tabs: ℹ️ О нас | 🔒 Безопасность | 💾 Резервная копия | ⚙ Параметры
                 let tabs_y = modal_y + 55.0;
                 let tabs_info = [
-                    (SettingsTab::Security, tr(lang, "🔒 Безопасность", "🔒 Security"), modal_x + 24.0, 136.0),
-                    (SettingsTab::Backup, tr(lang, "💾 Резервная копия", "💾 Backup"), modal_x + 165.0, 145.0),
-                    (SettingsTab::General, tr(lang, "⚙ Параметры", "⚙ General"), modal_x + 315.0, 135.0),
+                    (SettingsTab::About, tr(lang, "ℹ️ О нас", "ℹ️ About"), modal_x + 24.0, 110.0),
+                    (SettingsTab::Security, tr(lang, "🔒 Безопасность", "🔒 Security"), modal_x + 140.0, 135.0),
+                    (SettingsTab::Backup, tr(lang, "💾 Резервная копия", "💾 Backup"), modal_x + 281.0, 145.0),
+                    (SettingsTab::General, tr(lang, "⚙ Параметры", "⚙ General"), modal_x + 432.0, 130.0),
                 ];
 
                 for (tab_type, tab_label, tab_x, tab_w) in tabs_info {
@@ -3155,6 +3163,149 @@ impl UiRenderer {
 
                 // Tab Contents
                 match settings.active_tab {
+                    SettingsTab::About => {
+                        // 1. App Header (Logo, Name, Version badge, Tagline)
+                        let hdr_y = modal_y + 98.0;
+                        let logo_rect = LogicalRect::from_xywh(modal_x + 24.0, hdr_y, 44.0, 44.0);
+                        builder.fill_rect(logo_rect, Color::rgba(45, 212, 191, 35), 10.0);
+                        builder.stroke_rect(logo_rect, accent_mint, 1.2, 10.0);
+                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + 36.0, hdr_y + 12.0, 20.0, 20.0), accent_mint);
+
+                        // App Title
+                        let title_l = self.shape_cached("EvertySSH", StyleId::Title, None);
+                        builder.text(LogicalPoint::new(modal_x + 78.0, hdr_y + 2.0), title_l, text_main);
+
+                        // Version badge
+                        let ver_txt = "v0.2.2";
+                        let ver_rect = LogicalRect::from_xywh(modal_x + 195.0, hdr_y + 4.0, 56.0, 20.0);
+                        builder.fill_rect(ver_rect, Color::rgba(45, 212, 191, 30), 4.0);
+                        builder.stroke_rect(ver_rect, Color::rgba(45, 212, 191, 120), 1.0, 4.0);
+                        let ver_l = self.shape_cached(ver_txt, StyleId::Small, None);
+                        builder.text(LogicalPoint::new(modal_x + 203.0, hdr_y + 7.0), ver_l, accent_mint);
+
+                        // Tagline
+                        let sub_txt = tr(
+                            lang,
+                            "Быстрый, современный и безопасный SSH-клиент со сниппетами и сплит-экраном",
+                            "Fast, modern & secure SSH client with snippets, splits & history",
+                        );
+                        let sub_l = self.shape_cached(sub_txt, StyleId::Small, Some(LogicalPx(modal_w - 110.0)));
+                        builder.text(LogicalPoint::new(modal_x + 78.0, hdr_y + 26.0), sub_l, text_dim);
+
+                        // 2. Author card
+                        let author_y = modal_y + 158.0;
+                        let author_rect = LogicalRect::from_xywh(modal_x + 24.0, author_y, modal_w - 48.0, 56.0);
+                        builder.fill_rect(author_rect, Color::rgba(18, 28, 52, 220), 8.0);
+                        builder.stroke_rect(author_rect, card_border, 1.0, 8.0);
+
+                        // Author Avatar Icon (Stylish AV initials badge)
+                        let av_rect = LogicalRect::from_xywh(modal_x + 36.0, author_y + 10.0, 36.0, 36.0);
+                        builder.fill_rect(av_rect, Color::rgba(45, 212, 191, 30), 18.0);
+                        builder.stroke_rect(av_rect, accent_mint, 1.2, 18.0);
+                        let av_sym = self.shape_cached("AV", StyleId::SansBold, None);
+                        builder.text(LogicalPoint::new(modal_x + 44.0, author_y + 19.0), av_sym, accent_mint);
+
+                        // Author info
+                        let author_title = tr(lang, "Автор & Разработчик", "Author & Developer");
+                        let at_l = self.shape_cached(author_title, StyleId::Small, None);
+                        builder.text(LogicalPoint::new(modal_x + 82.0, author_y + 10.0), at_l, text_dim);
+
+                        let author_name = "Arthur Valiev";
+                        let an_l = self.shape_cached(author_name, StyleId::SansBold, None);
+                        builder.text(LogicalPoint::new(modal_x + 82.0, author_y + 28.0), an_l, text_main);
+
+                        // Ecosystem badge on right
+                        let badge_txt = "Everty Ecosystem";
+                        let bd_l = self.shape_cached(badge_txt, StyleId::Small, None);
+                        let bd_rect = LogicalRect::from_xywh(modal_x + modal_w - 165.0, author_y + 16.0, 125.0, 24.0);
+                        builder.fill_rect(bd_rect, Color::rgba(16, 185, 129, 25), 5.0);
+                        builder.stroke_rect(bd_rect, Color::rgba(52, 211, 153, 100), 1.0, 5.0);
+                        builder.text(LogicalPoint::new(modal_x + modal_w - 153.0, author_y + 21.0), bd_l, accent_emerald);
+
+                        // 3. Links Section Title
+                        let sec_l = self.shape_cached(tr(lang, "Ссылки и контакты", "Links & Contacts"), StyleId::SansBold, None);
+                        builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 224.0), sec_l, text_dim);
+
+                        // 4. Two columns of interactive link cards (2x2 grid)
+                        let c1_x = modal_x + 24.0;
+                        let c2_x = modal_x + 316.0;
+                        let c_w = 276.0;
+                        let r1_y = modal_y + 244.0;
+                        let r2_y = modal_y + 308.0;
+                        let c_h = 54.0;
+
+                        let links = [
+                            (
+                                HoverTarget::SettingsAboutLinkDesk,
+                                LogicalRect::from_xywh(c1_x, r1_y, c_w, c_h),
+                                ICON_CONNECT_ID,
+                                accent_mint,
+                                "Everty Desk",
+                                "desk.everty.ru",
+                            ),
+                            (
+                                HoverTarget::SettingsAboutLinkTelegram,
+                                LogicalRect::from_xywh(c2_x, r1_y, c_w, c_h),
+                                ICON_REFRESH_ID,
+                                Color::rgba(56, 189, 248, 255),
+                                "Telegram",
+                                "@Everty_web",
+                            ),
+                            (
+                                HoverTarget::SettingsAboutLinkEmail,
+                                LogicalRect::from_xywh(c1_x, r2_y, c_w, c_h),
+                                ICON_EDIT_ID,
+                                Color::rgba(251, 191, 36, 255),
+                                "Email",
+                                "info@everty.ru",
+                            ),
+                            (
+                                HoverTarget::SettingsAboutLinkGithub,
+                                LogicalRect::from_xywh(c2_x, r2_y, c_w, c_h),
+                                ICON_KEY_ID,
+                                Color::rgba(168, 85, 247, 255),
+                                "GitHub",
+                                "vaalimusic/EvertySSH",
+                            ),
+                        ];
+
+                        for (target, rect, icon_id, icon_color, title, sub) in links {
+                            let is_h = app.hover == target;
+                            let bg = if is_h { Color::rgba(26, 43, 76, 255) } else { Color::rgba(16, 26, 48, 200) };
+                            let border = if is_h { accent_mint } else { card_border };
+                            builder.fill_rect(rect, bg, 8.0);
+                            builder.stroke_rect(rect, border, if is_h { 1.2 } else { 1.0 }, 8.0);
+
+                            // Vector icon circle
+                            let icon_circle = LogicalRect::from_xywh(rect.origin.x.0 + 10.0, rect.origin.y.0 + 9.0, 36.0, 36.0);
+                            builder.fill_rect(icon_circle, if is_h { Color::rgba(45, 212, 191, 30) } else { Color::rgba(255, 255, 255, 10) }, 18.0);
+                            builder.icon(
+                                icon_id,
+                                LogicalRect::from_xywh(rect.origin.x.0 + 20.0, rect.origin.y.0 + 19.0, 16.0, 16.0),
+                                if is_h { accent_mint } else { icon_color },
+                            );
+
+                            // Title & Subtitle
+                            let t_l = self.shape_cached(title, StyleId::SansBold, None);
+                            builder.text(LogicalPoint::new(rect.origin.x.0 + 54.0, rect.origin.y.0 + 10.0), t_l, if is_h { accent_mint } else { text_main });
+
+                            let s_l = self.shape_cached(sub, StyleId::Small, None);
+                            builder.text(LogicalPoint::new(rect.origin.x.0 + 54.0, rect.origin.y.0 + 28.0), s_l, text_dim);
+
+                            // Arrow icon on right
+                            let arrow_l = self.shape_cached("↗", StyleId::SansBold, None);
+                            builder.text(
+                                LogicalPoint::new(rect.origin.x.0 + c_w - 22.0, rect.origin.y.0 + 18.0),
+                                arrow_l,
+                                if is_h { accent_mint } else { text_muted },
+                            );
+                        }
+
+                        // 5. Bottom Copyright & License
+                        let copy_txt = "© 2026 Arthur Valiev • Everty Ecosystem • Open Source under MIT License";
+                        let copy_l = self.shape_cached(copy_txt, StyleId::Small, None);
+                        builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + modal_h - 28.0), copy_l, text_muted);
+                    }
                     SettingsTab::Security => {
                         let has_existing = app.hosts_doc.settings.master_password_hash.is_some();
                         let badge_y = modal_y + 105.0;
