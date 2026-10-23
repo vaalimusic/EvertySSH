@@ -1786,19 +1786,39 @@ impl AppState {
     }
 
     pub fn pos_from_coords(&self, x: f64, y: f64) -> Option<TerminalPos> {
-        let pad_x = self.sidebar_width + 12.0;
-        let pad_y = self.header_height + 10.0;
+        let is_connected = self
+            .tabs
+            .get(self.active_tab)
+            .map_or(false, |t| t.handle.is_some());
+        let bar_h = if is_connected { 30.0 } else { 0.0 };
+
+        let pad_x = self.sidebar_width + 10.0;
+        let pad_y = self.header_height + bar_h + 6.0;
         let char_w = 8.2;
         let line_h = 18.0;
 
-        if x < pad_x || y < pad_y {
+        if !self.is_mouse_selecting && (x < pad_x || y < pad_y) {
             return None;
         }
 
-        let col = ((x - pad_x) / char_w).floor().max(0.0) as usize;
-        let row = ((y - pad_y) / line_h).floor().max(0.0) as usize;
+        let col = if x < pad_x {
+            0
+        } else {
+            ((x - pad_x) / char_w).floor().max(0.0) as usize
+        };
 
-        if row < self.terminal_rows {
+        let row = if y < pad_y {
+            0
+        } else {
+            ((y - pad_y) / line_h).floor().max(0.0) as usize
+        };
+
+        if self.is_mouse_selecting {
+            Some(TerminalPos {
+                col: col.min(self.terminal_cols.saturating_sub(1)),
+                row: row.min(self.terminal_rows.saturating_sub(1)),
+            })
+        } else if row < self.terminal_rows {
             Some(TerminalPos {
                 col: col.min(self.terminal_cols.saturating_sub(1)),
                 row,
@@ -3418,5 +3438,22 @@ mod tests {
         assert!(cmd.contains("echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGeneratedKey123 user@evertyssh' >> ~/.ssh/authorized_keys"));
         assert!(cmd.contains("chmod 600 ~/.ssh/authorized_keys"));
         assert!(cmd.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_pos_from_coords_calculation() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.sidebar_width = 240.0;
+        app.header_height = 42.0;
+        app.terminal_cols = 80;
+        app.terminal_rows = 24;
+
+        // Disconnected tab: bar_h = 0.0 -> pad_y = 42 + 0 + 6 = 48.0, pad_x = 240 + 10 = 250.0
+        let pos0 = app.pos_from_coords(254.0, 50.0);
+        assert_eq!(pos0, Some(TerminalPos { col: 0, row: 0 }));
+
+        let pos1 = app.pos_from_coords(254.0, 50.0 + 18.0);
+        assert_eq!(pos1, Some(TerminalPos { col: 0, row: 1 }));
     }
 }
