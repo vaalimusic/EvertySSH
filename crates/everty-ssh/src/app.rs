@@ -835,12 +835,22 @@ pub struct SettingsModal {
 #[derive(Debug, Clone, Default)]
 pub struct AddSnippetModal {
     pub is_open: bool,
+    pub is_editing: bool,
+    pub editing_id: Option<i64>,
     pub title: TextInput,
     pub command: TextInput,
     pub category: TextInput,
     pub description: TextInput,
     pub active_field: usize, // 0=title, 1=command, 2=category, 3=description
     pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfirmDeleteSnippetModal {
+    pub is_open: bool,
+    pub snippet_id: i64,
+    pub snippet_title: String,
+    pub snippet_command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -901,7 +911,10 @@ pub enum HoverTarget {
     SidebarAddSnippetBtn,
     SnippetRun(usize),
     SnippetCopy(usize),
+    SnippetEdit(usize),
     SnippetDelete(usize),
+    ConfirmDeleteSnippetConfirm,
+    ConfirmDeleteSnippetCancel,
     // Add Snippet Modal
     ModalSnippetField(usize),
     ModalSnippetSave,
@@ -1040,6 +1053,7 @@ pub struct AppState {
     pub add_snippet_modal: AddSnippetModal,
     pub session_dashboard_modal: Option<SessionDashboardModal>,
     pub confirm_delete_modal: Option<ConfirmDeleteHostModal>,
+    pub confirm_delete_snippet_modal: Option<ConfirmDeleteSnippetModal>,
     pub confirm_run_modal: Option<ConfirmRunCommandModal>,
     pub settings_modal: Option<SettingsModal>,
     pub input_context_menu: Option<InputContextMenu>,
@@ -1121,6 +1135,7 @@ impl AppState {
             add_snippet_modal: AddSnippetModal::default(),
             session_dashboard_modal: None,
             confirm_delete_modal: None,
+            confirm_delete_snippet_modal: None,
             confirm_run_modal: None,
             settings_modal: None,
             input_context_menu: None,
@@ -1257,11 +1272,43 @@ impl AppState {
             }
         }
 
+        // 0.002 Confirm Delete Snippet Modal
+        if let Some(confirm) = &self.confirm_delete_snippet_modal {
+            if confirm.is_open {
+                let modal_w = 480.0f64.min(w - 40.0);
+                let modal_h = 220.0f64.min(h - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let modal_y = (h - modal_h) / 2.0;
+
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                    new_hover = HoverTarget::ModalDialogBody;
+                    cursor = CursorIcon::Default;
+                    let btn_y = modal_y + modal_h - 52.0;
+
+                    if y >= btn_y && y <= btn_y + 36.0 {
+                        if x >= modal_x + modal_w - 240.0 && x <= modal_x + modal_w - 130.0 {
+                            new_hover = HoverTarget::ConfirmDeleteSnippetCancel;
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + modal_w - 120.0 && x <= modal_x + modal_w - 20.0 {
+                            new_hover = HoverTarget::ConfirmDeleteSnippetConfirm;
+                            cursor = CursorIcon::Pointer;
+                        }
+                    }
+                    let changed = old_hover != new_hover;
+                    self.hover = new_hover;
+                    return (changed, cursor);
+                }
+            }
+        }
+
         // 0.005 Confirm Run Command Modal
         if let Some(confirm_run) = &self.confirm_run_modal {
             if confirm_run.is_open {
-                let modal_w = 540.0f64.min(w - 40.0);
-                let modal_h = (if confirm_run.is_dangerous { 310.0 } else { 270.0 } as f64).min(h - 40.0);
+                let modal_w = 600.0f64.min(w - 40.0);
+                let approx_lines = (confirm_run.command.len() / 55) + 1;
+                let cmd_box_h = (approx_lines as f64 * 18.0 + 24.0).clamp(44.0, 160.0);
+                let base_h = if confirm_run.is_dangerous { 240.0 } else { 200.0 };
+                let modal_h = (base_h + cmd_box_h).min(h - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
@@ -1888,8 +1935,10 @@ impl AppState {
                                             if x >= sidebar_w - 34.0 && x <= sidebar_w - 10.0 {
                                                 new_hover = HoverTarget::SnippetDelete(item_idx);
                                             } else if x >= sidebar_w - 62.0 && x < sidebar_w - 34.0 {
-                                                new_hover = HoverTarget::SnippetCopy(item_idx);
+                                                new_hover = HoverTarget::SnippetEdit(item_idx);
                                             } else if x >= sidebar_w - 90.0 && x < sidebar_w - 62.0 {
+                                                new_hover = HoverTarget::SnippetCopy(item_idx);
+                                            } else if x >= sidebar_w - 118.0 && x < sidebar_w - 90.0 {
                                                 new_hover = HoverTarget::SnippetRun(item_idx);
                                             } else {
                                                 new_hover = HoverTarget::SnippetItem(item_idx);
@@ -2180,6 +2229,7 @@ impl AppState {
             || self.add_snippet_modal.is_open
             || self.session_dashboard_modal.as_ref().map_or(false, |m| m.is_open)
             || self.confirm_delete_modal.is_some()
+            || self.confirm_delete_snippet_modal.is_some()
             || self.confirm_run_modal.is_some()
             || self.settings_modal.as_ref().map_or(false, |m| m.is_open)
             || self.palette_open
@@ -3699,7 +3749,10 @@ impl AppState {
             HoverTarget::SessionDashboardCopyCmd(_) => Some(tr(lang, "Скопировать команду в буфер", "Copy command to clipboard")),
             HoverTarget::SnippetRun(_) => Some(tr(lang, "Запустить сниппет в активном терминале", "Run snippet in active terminal")),
             HoverTarget::SnippetCopy(_) => Some(tr(lang, "Скопировать текст сниппета", "Copy snippet text")),
+            HoverTarget::SnippetEdit(_) => Some(tr(lang, "Редактировать параметры сниппета", "Edit snippet configuration")),
             HoverTarget::SnippetDelete(_) => Some(tr(lang, "Удалить сниппет", "Delete snippet")),
+            HoverTarget::ConfirmDeleteSnippetConfirm => Some(tr(lang, "Подтвердить удаление сниппета", "Confirm snippet deletion")),
+            HoverTarget::ConfirmDeleteSnippetCancel => Some(tr(lang, "Отменить удаление сниппета (Esc)", "Cancel snippet deletion (Esc)")),
             HoverTarget::KeyToolGenerateBtn => Some(tr(lang, "Сгенерировать ключевую пару OpenSSH", "Generate OpenSSH key pair")),
             HoverTarget::KeyToolSendTermBtn => Some(tr(lang, "Отправить ключ и настроить authorized_keys", "Deploy key to authorized_keys")),
             HoverTarget::KeyToolBindHostBtn => Some(tr(lang, "Привязать ключ к профилю сервера", "Attach key to server profile")),
@@ -3919,6 +3972,8 @@ impl AppState {
     pub fn open_add_snippet_dialog(&mut self) {
         self.add_snippet_modal = AddSnippetModal {
             is_open: true,
+            is_editing: false,
+            editing_id: None,
             title: TextInput::default(),
             command: TextInput::default(),
             category: TextInput::new("General"),
@@ -3928,6 +3983,41 @@ impl AppState {
         };
         self.caret_visible = true;
         self.caret_blink_time = std::time::Instant::now();
+    }
+
+    pub fn open_edit_snippet_dialog(&mut self, snip_idx: usize) {
+        if let Some(snip) = self.snippets.get(snip_idx) {
+            self.add_snippet_modal = AddSnippetModal {
+                is_open: true,
+                is_editing: true,
+                editing_id: Some(snip.id),
+                title: TextInput::new(&snip.title),
+                command: TextInput::new(&snip.command),
+                category: TextInput::new(snip.category.clone().unwrap_or_else(|| "General".into())),
+                description: TextInput::new(snip.description.clone().unwrap_or_default()),
+                active_field: 0,
+                error_msg: None,
+            };
+            self.caret_visible = true;
+            self.caret_blink_time = std::time::Instant::now();
+        }
+    }
+
+    pub fn open_confirm_delete_snippet_modal(&mut self, snip_idx: usize) {
+        if let Some(snip) = self.snippets.get(snip_idx) {
+            self.confirm_delete_snippet_modal = Some(ConfirmDeleteSnippetModal {
+                is_open: true,
+                snippet_id: snip.id,
+                snippet_title: snip.title.clone(),
+                snippet_command: snip.command.clone(),
+            });
+        }
+    }
+
+    pub fn execute_confirm_delete_snippet(&mut self) {
+        if let Some(m) = self.confirm_delete_snippet_modal.take() {
+            self.delete_snippet_by_id(m.snippet_id);
+        }
     }
 
     pub fn save_snippet_from_modal(&mut self) -> bool {
@@ -3948,7 +4038,17 @@ impl AppState {
         let cat_opt = if category.is_empty() { None } else { Some(category.as_str()) };
         let desc_opt = if description.is_empty() { None } else { Some(description.as_str()) };
 
-        if let Ok(_) = self.db.add_snippet(&title, &command, cat_opt, desc_opt) {
+        let result = if self.add_snippet_modal.is_editing {
+            if let Some(id) = self.add_snippet_modal.editing_id {
+                self.db.update_snippet(id, &title, &command, cat_opt, desc_opt)
+            } else {
+                self.db.add_snippet(&title, &command, cat_opt, desc_opt).map(|_| ())
+            }
+        } else {
+            self.db.add_snippet(&title, &command, cat_opt, desc_opt).map(|_| ())
+        };
+
+        if result.is_ok() {
             self.add_snippet_modal.is_open = false;
             self.refresh_snippets();
             true

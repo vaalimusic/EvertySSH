@@ -122,6 +122,35 @@ impl UiRenderer {
         layout
     }
 
+    pub fn shape_clamped_cached(
+        &mut self,
+        text: &str,
+        style_id: StyleId,
+        max_width: LogicalPx,
+        max_lines: usize,
+    ) -> Arc<TextLayout> {
+        let mw_key = (max_width.0 * 10.0) as u32;
+        let key = (format!("{text}#clamped#{max_lines}"), style_id, mw_key);
+        if let Some(layout) = self.layout_cache.get(&key) {
+            return Arc::clone(layout);
+        }
+
+        let style = match style_id {
+            StyleId::Sans => &self.sans_style,
+            StyleId::SansBold => &self.sans_bold,
+            StyleId::Mono => &self.mono_style,
+            StyleId::Small => &self.small_style,
+            StyleId::Title => &self.title_style,
+        };
+
+        let layout = Arc::new(self.text_system.shape_clamped(text, style, max_width, max_lines));
+        if self.layout_cache.len() >= 1200 {
+            self.layout_cache.clear();
+        }
+        self.layout_cache.insert(key, Arc::clone(&layout));
+        layout
+    }
+
     pub fn draw_input_box(
         &mut self,
         builder: &mut PaintBuilder,
@@ -1359,8 +1388,11 @@ impl UiRenderer {
                         5.0,
                     );
 
-                    let cmd_layout = self.shape_cached(&cmd.command, StyleId::Mono, None);
+                    let max_cmd_w = (sidebar_w - 60.0).max(40.0);
+                    builder.push_clip(LogicalRect::from_xywh(18.0, item_y, max_cmd_w, 38.0));
+                    let cmd_layout = self.shape_clamped_cached(&cmd.command, StyleId::Mono, LogicalPx(max_cmd_w), 1);
                     builder.text(LogicalPoint::new(20.0, item_y + 7.0), cmd_layout, accent_mint);
+                    let _ = builder.pop_clip();
 
                     let date_layout = self.shape_cached(&cmd.executed_at.format("%H:%M:%S").to_string(), StyleId::Small, None);
                     builder.text(LogicalPoint::new(20.0, item_y + 23.0), date_layout, text_muted);
@@ -1415,47 +1447,70 @@ impl UiRenderer {
                     let is_card_hover = app.hover == HoverTarget::SnippetItem(snip_idx);
                     let is_run_hover = app.hover == HoverTarget::SnippetRun(snip_idx);
                     let is_copy_hover = app.hover == HoverTarget::SnippetCopy(snip_idx);
+                    let is_edit_hover = app.hover == HoverTarget::SnippetEdit(snip_idx);
                     let is_del_hover = app.hover == HoverTarget::SnippetDelete(snip_idx);
 
                     let snip_rect = LogicalRect::from_xywh(10.0, item_y, sidebar_w - 20.0, 56.0);
                     builder.fill_rect(snip_rect, if is_card_hover { card_hover_bg } else { card_bg }, 5.0);
                     builder.stroke_rect(snip_rect, if is_card_hover { accent_mint } else { card_border }, 1.0, 5.0);
 
-                    let title_layout = self.shape_cached(&snip.title, StyleId::SansBold, Some(LogicalPx(sidebar_w - 110.0)));
+                    // Text area width leaving 130px for 4 buttons (24px each + gaps)
+                    let text_w = (sidebar_w - 130.0).max(40.0);
+                    builder.push_clip(LogicalRect::from_xywh(18.0, item_y, text_w, 56.0));
+                    let title_layout = self.shape_clamped_cached(&snip.title, StyleId::SansBold, LogicalPx(text_w), 1);
                     builder.text(LogicalPoint::new(20.0, item_y + 7.0), title_layout, text_main);
 
-                    let cmd_layout = self.shape_cached(&snip.command, StyleId::Mono, Some(LogicalPx(sidebar_w - 110.0)));
+                    let cmd_layout = self.shape_clamped_cached(&snip.command, StyleId::Mono, LogicalPx(text_w), 1);
                     builder.text(LogicalPoint::new(20.0, item_y + 29.0), cmd_layout, accent_mint);
+                    let _ = builder.pop_clip();
 
-                    // Aligned action buttons on right: Run, Copy, Delete
-                    let run_rect = LogicalRect::from_xywh(sidebar_w - 90.0, item_y + 16.0, 24.0, 24.0);
+                    // Aligned action buttons on right: Run, Copy, Edit, Delete
+                    // 1. Run (sidebar_w - 118.0)
+                    let run_rect = LogicalRect::from_xywh(sidebar_w - 118.0, item_y + 16.0, 24.0, 24.0);
                     if is_run_hover {
                         builder.fill_rect(run_rect, accent_mint, 5.0);
-                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
+                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 113.0, item_y + 21.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
                     } else if is_card_hover {
                         builder.fill_rect(run_rect, Color::rgba(20, 42, 68, 255), 5.0);
                         builder.stroke_rect(run_rect, accent_mint, 1.0, 5.0);
-                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), accent_mint);
+                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 113.0, item_y + 21.0, 14.0, 14.0), accent_mint);
                     } else {
                         builder.fill_rect(run_rect, Color::rgba(14, 24, 42, 180), 5.0);
                         builder.stroke_rect(run_rect, Color::rgba(45, 212, 191, 50), 1.0, 5.0);
-                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), Color::rgba(148, 163, 184, 200));
+                        builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(sidebar_w - 113.0, item_y + 21.0, 14.0, 14.0), Color::rgba(148, 163, 184, 200));
                     }
 
-                    let copy_rect = LogicalRect::from_xywh(sidebar_w - 62.0, item_y + 16.0, 24.0, 24.0);
+                    // 2. Copy (sidebar_w - 90.0)
+                    let copy_rect = LogicalRect::from_xywh(sidebar_w - 90.0, item_y + 16.0, 24.0, 24.0);
                     if is_copy_hover {
                         builder.fill_rect(copy_rect, Color::rgba(45, 212, 191, 230), 5.0);
-                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
+                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
                     } else if is_card_hover {
                         builder.fill_rect(copy_rect, Color::rgba(22, 38, 64, 240), 5.0);
                         builder.stroke_rect(copy_rect, Color::rgba(45, 212, 191, 140), 1.0, 5.0);
-                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(45, 212, 191, 220));
+                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), Color::rgba(45, 212, 191, 220));
                     } else {
                         builder.fill_rect(copy_rect, Color::rgba(16, 26, 44, 180), 5.0);
                         builder.stroke_rect(copy_rect, Color::rgba(45, 212, 191, 50), 1.0, 5.0);
-                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(148, 163, 184, 180));
+                        builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(sidebar_w - 85.0, item_y + 21.0, 14.0, 14.0), Color::rgba(148, 163, 184, 180));
                     }
 
+                    // 3. Edit (sidebar_w - 62.0)
+                    let edit_rect = LogicalRect::from_xywh(sidebar_w - 62.0, item_y + 16.0, 24.0, 24.0);
+                    if is_edit_hover {
+                        builder.fill_rect(edit_rect, Color::rgba(56, 189, 248, 230), 5.0);
+                        builder.icon(ICON_EDIT_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
+                    } else if is_card_hover {
+                        builder.fill_rect(edit_rect, Color::rgba(18, 36, 60, 240), 5.0);
+                        builder.stroke_rect(edit_rect, Color::rgba(56, 189, 248, 140), 1.0, 5.0);
+                        builder.icon(ICON_EDIT_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(56, 189, 248, 220));
+                    } else {
+                        builder.fill_rect(edit_rect, Color::rgba(16, 26, 44, 180), 5.0);
+                        builder.stroke_rect(edit_rect, Color::rgba(56, 189, 248, 50), 1.0, 5.0);
+                        builder.icon(ICON_EDIT_ID, LogicalRect::from_xywh(sidebar_w - 57.0, item_y + 21.0, 14.0, 14.0), Color::rgba(148, 163, 184, 180));
+                    }
+
+                    // 4. Delete (sidebar_w - 34.0)
                     let del_rect = LogicalRect::from_xywh(sidebar_w - 34.0, item_y + 16.0, 24.0, 24.0);
                     if is_del_hover {
                         builder.fill_rect(del_rect, Color::rgba(239, 68, 68, 255), 5.0);
@@ -2288,7 +2343,12 @@ impl UiRenderer {
             builder.fill_rect(modal_rect, Color::rgba(14, 23, 42, 255), 8.0);
             builder.stroke_rect(modal_rect, accent_mint, 1.5, 8.0);
 
-            let t_layout = self.shape_cached(tr(lang, "Создать сниппет команды", "Create Command Snippet"), StyleId::Title, None);
+            let title_text = if app.add_snippet_modal.is_editing {
+                tr(lang, "Редактировать сниппет", "Edit Snippet")
+            } else {
+                tr(lang, "Создать сниппет команды", "Create Command Snippet")
+            };
+            let t_layout = self.shape_cached(title_text, StyleId::Title, None);
             builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 20.0), t_layout, text_main);
 
             // Close button
@@ -2355,7 +2415,12 @@ impl UiRenderer {
             let is_save_h = app.hover == HoverTarget::ModalSnippetSave;
             let save_rect = LogicalRect::from_xywh(modal_x + modal_w - 140.0, btn_y, 116.0, 32.0);
             builder.fill_rect(save_rect, if is_save_h { Color::rgba(45, 212, 191, 230) } else { accent_mint }, 4.0);
-            let s_layout = self.shape_cached(tr(lang, "💾 Сохранить", "💾 Save"), StyleId::SansBold, None);
+            let save_btn_text = if app.add_snippet_modal.is_editing {
+                tr(lang, "💾 Обновить", "💾 Update")
+            } else {
+                tr(lang, "💾 Сохранить", "💾 Save")
+            };
+            let s_layout = self.shape_cached(save_btn_text, StyleId::SansBold, None);
             builder.text(LogicalPoint::new(modal_x + modal_w - 130.0, btn_y + 7.0), s_layout, bg_app);
         }
 
@@ -2598,13 +2663,89 @@ impl UiRenderer {
             }
         }
 
+        // 12.1 Confirm Delete Snippet Modal
+        if let Some(confirm_snip) = &app.confirm_delete_snippet_modal {
+            if confirm_snip.is_open {
+                builder.fill_rect(LogicalRect::from_xywh(0.0, 0.0, w, h), Color::rgba(0, 0, 0, 190), 0.0);
+
+                let modal_w = 480.0f64.min(w - 40.0);
+                let modal_h = 210.0f64.min(h - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let modal_y = (h - modal_h) / 2.0;
+                let modal_rect = LogicalRect::from_xywh(modal_x, modal_y, modal_w, modal_h);
+
+                builder.fill_rect(modal_rect, Color::rgba(14, 23, 42, 255), 8.0);
+                builder.stroke_rect(modal_rect, Color::rgba(239, 68, 68, 200), 1.5, 8.0);
+
+                // Warning Icon + Title
+                builder.fill_rect(
+                    LogicalRect::from_xywh(modal_x + 24.0, modal_y + 22.0, 36.0, 36.0),
+                    Color::rgba(239, 68, 68, 40),
+                    18.0,
+                );
+                builder.icon(
+                    ICON_ALERT_ID,
+                    LogicalRect::from_xywh(modal_x + 32.0, modal_y + 30.0, 20.0, 20.0),
+                    Color::rgba(239, 68, 68, 255),
+                );
+
+                let title_l = self.shape_cached(tr(lang, "Удалить сниппет?", "Delete Snippet?"), StyleId::Title, None);
+                builder.text(LogicalPoint::new(modal_x + 70.0, modal_y + 28.0), title_l, text_main);
+
+                // Snippet details
+                let msg = format!("{} «{}»?", tr(lang, "Вы действительно хотите удалить сниппет", "Are you sure you want to delete snippet"), confirm_snip.snippet_title);
+                let msg_l = self.shape_clamped_cached(&msg, StyleId::SansBold, LogicalPx(modal_w - 50.0), 1);
+                builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 76.0), msg_l, text_main);
+
+                let sub_msg = format!("{}: {}. {}", tr(lang, "Команда", "Command"), confirm_snip.snippet_command, tr(lang, "Это действие нельзя отменить.", "This action cannot be undone."));
+                let sub_l = self.shape_clamped_cached(&sub_msg, StyleId::Small, LogicalPx(modal_w - 50.0), 1);
+                builder.text(LogicalPoint::new(modal_x + 24.0, modal_y + 104.0), sub_l, text_muted);
+
+                // Buttons: Cancel (Esc) and Delete (Enter)
+                let btn_y = modal_y + modal_h - 52.0;
+
+                // Cancel Button
+                let is_cancel_h = app.hover == HoverTarget::ConfirmDeleteSnippetCancel;
+                let cancel_rect = LogicalRect::from_xywh(modal_x + modal_w - 240.0, btn_y, 110.0, 34.0);
+                if is_cancel_h {
+                    builder.fill_rect(cancel_rect, Color::rgba(30, 48, 85, 230), 5.0);
+                } else {
+                    builder.fill_rect(cancel_rect, Color::rgba(20, 32, 58, 200), 5.0);
+                }
+                builder.stroke_rect(cancel_rect, card_border, 1.0, 5.0);
+                let cancel_l = self.shape_cached(tr(lang, "Отмена (Esc)", "Cancel (Esc)"), StyleId::Small, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 224.0, btn_y + 8.0), cancel_l, text_dim);
+
+                // Delete Button
+                let is_del_h = app.hover == HoverTarget::ConfirmDeleteSnippetConfirm;
+                let del_rect = LogicalRect::from_xywh(modal_x + modal_w - 120.0, btn_y, 100.0, 34.0);
+                if is_del_h {
+                    builder.fill_rect(del_rect, Color::rgba(220, 38, 38, 255), 5.0);
+                } else {
+                    builder.fill_rect(del_rect, Color::rgba(239, 68, 68, 230), 5.0);
+                }
+                builder.icon(
+                    ICON_CLOSE_ID,
+                    LogicalRect::from_xywh(modal_x + modal_w - 110.0, btn_y + 10.0, 14.0, 14.0),
+                    Color::rgba(255, 255, 255, 255),
+                );
+                let del_btn_l = self.shape_cached(tr(lang, "Удалить", "Delete"), StyleId::SansBold, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 90.0, btn_y + 7.0), del_btn_l, Color::rgba(255, 255, 255, 255));
+            }
+        }
+
         // 12.5 Confirm Run Command Modal
         if let Some(confirm_run) = &app.confirm_run_modal {
             if confirm_run.is_open {
                 builder.fill_rect(LogicalRect::from_xywh(0.0, 0.0, w, h), Color::rgba(0, 0, 0, 190), 0.0);
 
-                let modal_w = 540.0f64.min(w - 40.0);
-                let modal_h = (if confirm_run.is_dangerous { 310.0 } else { 270.0 } as f64).min(h - 40.0);
+                let modal_w = 600.0f64.min(w - 40.0);
+                let line_count = confirm_run.command.lines().count().max(1);
+                let char_len = confirm_run.command.len();
+                let est_lines = line_count.max((char_len / 55) + 1).min(8);
+                let cmd_box_h = (est_lines as f64 * 20.0 + 24.0).max(48.0);
+                let base_h = if confirm_run.is_dangerous { 280.0 } else { 240.0 };
+                let modal_h = (base_h + cmd_box_h).min(h - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
                 let modal_rect = LogicalRect::from_xywh(modal_x, modal_y, modal_w, modal_h);
@@ -2659,13 +2800,14 @@ impl UiRenderer {
                 }
 
                 // Command Preview Box (Monospace)
-                let cmd_box_h = 44.0;
                 let cmd_rect = LogicalRect::from_xywh(modal_x + 24.0, cur_y, modal_w - 48.0, cmd_box_h);
                 builder.fill_rect(cmd_rect, Color::rgba(10, 16, 30, 255), 5.0);
                 builder.stroke_rect(cmd_rect, card_border, 1.0, 5.0);
 
+                builder.push_clip(LogicalRect::from_xywh(modal_x + 28.0, cur_y + 4.0, modal_w - 56.0, cmd_box_h - 8.0));
                 let cmd_l = self.shape_cached(&confirm_run.command, StyleId::Mono, Some(LogicalPx(modal_w - 68.0)));
                 builder.text(LogicalPoint::new(modal_x + 36.0, cur_y + 12.0), cmd_l, Color::rgba(56, 189, 248, 255));
+                let _ = builder.pop_clip();
 
                 cur_y += cmd_box_h + 10.0;
 

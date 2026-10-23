@@ -423,6 +423,25 @@ impl HistoryDb {
         Ok(result)
     }
 
+    pub fn update_snippet(
+        &self,
+        id: i64,
+        title: &str,
+        command: &str,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> SqlResult<()> {
+        self.conn.execute(
+            r#"
+            UPDATE snippets
+            SET title = ?1, command = ?2, category = ?3, description = ?4
+            WHERE id = ?5
+            "#,
+            params![title, command, category, description, id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_snippet(&self, id: i64) -> SqlResult<()> {
         self.conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
         Ok(())
@@ -488,5 +507,14 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, "closed");
         assert!(sessions[0].ended_at.is_some());
+
+        // Test snippet update
+        let snip_id = db.add_snippet("Old Title", "old cmd", Some("Cat"), None).unwrap();
+        db.update_snippet(snip_id, "New Title", "new cmd", Some("NewCat"), Some("NewDesc")).unwrap();
+        let updated = db.search_snippets("New Title").unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].command, "new cmd");
+        assert_eq!(updated[0].category.as_deref(), Some("NewCat"));
+        assert_eq!(updated[0].description.as_deref(), Some("NewDesc"));
     }
 }

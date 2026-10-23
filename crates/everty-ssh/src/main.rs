@@ -600,11 +600,20 @@ impl EvertySshApp {
                 }
                 self.request_redraw();
             }
+            HoverTarget::SnippetEdit(idx) => {
+                self.state.open_edit_snippet_dialog(idx);
+                self.request_redraw();
+            }
             HoverTarget::SnippetDelete(idx) => {
-                if let Some(snip) = self.state.snippets.get(idx) {
-                    let id = snip.id;
-                    self.state.delete_snippet_by_id(id);
-                }
+                self.state.open_confirm_delete_snippet_modal(idx);
+                self.request_redraw();
+            }
+            HoverTarget::ConfirmDeleteSnippetConfirm => {
+                self.state.execute_confirm_delete_snippet();
+                self.request_redraw();
+            }
+            HoverTarget::ConfirmDeleteSnippetCancel => {
+                self.state.confirm_delete_snippet_modal = None;
                 self.request_redraw();
             }
             HoverTarget::ModalSnippetField(idx) => {
@@ -1157,6 +1166,23 @@ impl ApplicationHandler for EvertySshApp {
                         }
                         Key::Named(NamedKey::Enter) => {
                             self.state.execute_confirm_delete_host();
+                            self.request_redraw();
+                            return;
+                        }
+                        _ => return,
+                    }
+                }
+
+                // If Confirm Delete Snippet Modal is Open
+                if self.state.confirm_delete_snippet_modal.is_some() {
+                    match &logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.state.confirm_delete_snippet_modal = None;
+                            self.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.state.execute_confirm_delete_snippet();
                             self.request_redraw();
                             return;
                         }
