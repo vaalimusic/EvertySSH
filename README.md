@@ -5,12 +5,16 @@
 <h1 align="center">EvertySSH ⚡</h1>
 
 <p align="center">
-  <b>Ультрабыстрый, минималистичный кроссплатформенный SSH-клиент нового поколения на Rust</b><br>
-  Создан на базе собственного независимого интерфейсного движка <b>EvertyUI</b>
+  <b>Ultra-fast, minimalist, and secure next-generation cross-platform SSH client written in Rust</b><br>
+  Powered by the custom, independent <b>EvertyUI</b> vector rendering engine
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v0.2.0-2dd4bf?style=for-the-badge" alt="Release v0.2.0" />
+  <a href="README.md"><b>English</b></a> • <a href="README.ru.md"><b>Русский</b></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Release-v0.2.3-2dd4bf?style=for-the-badge" alt="Release v0.2.3" />
   <img src="https://img.shields.io/badge/Language-Rust%202021-DEA584?style=for-the-badge&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/UI_Engine-EvertyUI-2dd4bf?style=for-the-badge" alt="EvertyUI" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0284c7?style=for-the-badge" alt="Platforms" />
@@ -19,155 +23,168 @@
 
 ---
 
-## 📖 О проекте
+## 📖 About the Project
 
-**EvertySSH** — это легковесный, безопасный и невероятно отзывчивый SSH-клиент для системных администраторов, DevOps-инженеров и разработчиков. 
+**EvertySSH** is a lightweight, secure, and incredibly responsive desktop SSH client designed specifically for DevOps engineers, system administrators, and software developers.
 
-Проект спроектирован с упором на максимальную производительность, моментальный запуск, отсутствие тяжелых зависимостей (Electron/Webview/Chromium) и полную аппаратную независимость благодаря рендерингу через программный буфер с векторной растеризацией.
+Engineered with an uncompromising focus on raw performance, instant startup (<20ms), and zero bloat (no Electron, no Chromium, no Webview). EvertySSH renders directly into a hardware-independent frame buffer with sub-pixel antialiased vector geometry and typography via the custom **EvertyUI** framework.
 
-Интерфейс оформлен в фирменном кибер-стиле **Everty** (*Cyber Midnight* `#090e1a` с бирюзово-мятными `#2dd4bf` и изумрудными `#34d399` акцентами).
-
----
-
-## 🎨 EvertyUI — собственный интерфейсный движок для приложений Everty
-
-**EvertyUI** — это собственный UI-фреймворк, разрабатываемый для создания нативных интерфейсов настольных приложений экосистемы **Everty**.
-
-Проект появился из практической необходимости. По мере развития **EvertyDesk Next** стало очевидно, что интерфейс — это не просто набор кнопок, окон и текстовых полей. Это полноценная часть программной архитектуры, от которой зависят скорость отклика, потребление ресурсов, удобство разработки и возможность дальнейшего развития продукта.
-
-Вместо постоянной адаптации сторонних интерфейсных решений под особенности каждого нового приложения было принято решение развивать собственный интерфейсный слой.
-
-### Зачем нужен EvertyUI
-
-Основная задача EvertyUI — предоставить единую технологическую основу для создания интерфейсов программ Everty без необходимости каждый раз разрабатывать графическую часть с нуля или подстраивать архитектуру приложения под ограничения стороннего фреймворка.
-
-**EvertyUI решает ключевые задачи:**
-
-1. **Независимость от сторонних UI-фреймворков.** Возможность самостоятельно развивать интерфейсные компоненты, управлять архитектурой и определять направление развития без зависимости от решений внешних разработчиков.
-2. **Единая интерфейсная основа.** Использование общих элементов, принципов взаимодействия и визуального поведения в различных приложениях Everty.
-3. **Контроль производительности.** Возможность оптимизировать отрисовку, обработку пользовательского ввода и обновление интерфейса с учётом конкретных задач приложения (субмиллисекундный фреймтайм, 0% CPU в режиме простоя).
-4. **Разделение интерфейса и бизнес-логики.** Графическая часть отвечает за взаимодействие с пользователем, тогда как основная функциональность реализуется независимыми программными компонентами на Rust.
-5. **Повторное использование компонентов.** Разработанные элементы интерфейса используются в нескольких продуктах, сокращая объём повторяющейся работы.
-6. **Развитие собственной программной экосистемы.** Новые приложения используют уже созданную интерфейсную инфраструктуру вместо формирования отдельного технологического стека для каждого продукта.
-
-### Где используется EvertyUI
-
-EvertyUI уже применяется в интерфейсных компонентах **EvertyDesk Next**, включая **Viewer** и **File Manager**. В этих приложениях интерфейс взаимодействует с технологически сложными подсистемами: удалённым рабочим столом, передачей файлов, управлением подключениями и обработкой пользовательских действий. 
-
-В дальнейшем EvertyUI рассматривается как интерфейсная основа для других приложений экосистемы, в частности **Aura**, а **EvertySSH** выступает его флагманским воплощением для работы с терминалами и серверами.
-
-### Архитектурный подход
-
-Ключевой принцип EvertyUI — **интерфейс не должен определять архитектуру всего приложения.**
-
-Вычислительные, сетевые и системные компоненты разрабатываются независимо от графического представления. Интерфейс получает состояние приложения, отображает его и передаёт действия пользователя соответствующим подсистемам. Такой подход позволяет развивать внутреннюю логику продукта без переработки его графической части.
-
-### Почему собственный фреймворк
-
-Существуют Qt, GTK, Avalonia, WinUI, Flutter, iced и другие технологии создания интерфейсов. EvertyUI не ставит целью заменить их во всех возможных сценариях. Его задача конкретнее: **обеспечить потребности собственных программных продуктов и предоставить разработчику непосредственный контроль над интерфейсной архитектурой.**
-
-> EvertyUI — не интерфейс ради интерфейса. Это инструмент, который создаётся под реальные задачи, используется в реальных программах и совершенствуется по мере возникновения новых требований.
+The interface is designed in the signature **Everty** *Cyber Midnight* theme (`#090e1a` base with mint `#2dd4bf`, cyan `#38bdf8`, and emerald `#34d399` accents).
 
 ---
 
-## ⚡ Ключевые возможности EvertySSH
+## 🌟 Why EvertySSH?
 
-### 🖥️ Управление серверами (Hosts Manager)
-* **Быстрое добавление и редактирование:** диалоговые окна с поддержкой горячих клавиш (`Ctrl+N`), группировка (`Production`, `Staging`, `Personal`).
-* **Гибкая аутентификация:** системный `SSH-Agent` (включая Windows OpenSSH Authentication Agent), публичные/приватные ключи Ed25519/RSA или пароль.
-* **Защита от случайного удаления:** аккуратное подтверждающее окно перед удалением хоста.
-* **Хранение конфигурации:** чистый, понятный формат TOML (`~/.evertyssh/hosts.toml`).
-
-### 🔑 Встроенный генератор и установщик SSH-ключей
-* Генерация пар ключей **Ed25519** и **RSA-4096** с возможностью указания парольной фразы (passphrase) и комментариев.
-* Возможность выбора пути к существующему ключу через нативный системный проводник.
-* **Установка ключа на сервер в 1 клик:** генерация ключа, сохранение на локальный диск и мгновенная отправка команды установки в `authorized_keys` целевого сервера.
-
-### ⌨️ Продвинутый VT100 / ANSI терминал
-* **Высокая скорость:** поддержка ANSI escape-последовательностей, 256 цветов, TrueColor 24-bit.
-* **Режимы DEC Private:** скрытие/показ курсора (`?25h`/`?25l`), альтернативный буфер экрана (`?1049h`/`?1049l` для корректной работы `vim`, `htop`, `nano`, `mc`).
-* **Полноценный сплит-экран (Split Screen):** параллельный просмотр двух терминальных сессий в одном окне (`Ctrl+Alt+S`).
-* **Поиск по терминалу (`Ctrl+F`):** подсветка совпадений, навигация `Enter` / `Shift+Enter`.
-* **Выделение и буфер обмена:** выделение мышью, копирование/вставка через контекстное меню или горячие клавиши.
-
-### 🌐 Полная поддержка русской раскладки для горячих клавиш
-Все сочетания клавиш (`Ctrl+C`, `Ctrl+V`, `Ctrl+X`, `Ctrl+A`, `Ctrl+N`, `Ctrl+R`, `Ctrl+T`, `Ctrl+W`, `Ctrl+F`, `Ctrl+Alt+S`) работают абсолютно одинаково **как на английской, так и на русской раскладке клавиатуры**, отслеживаясь на физическом и логическом уровнях.
-
-### 📜 История команд и дашборд сессий (SQLite)
-* Локальная база данных `~/.evertyssh/history.db` сохраняет историю подключений, длительность сессий и отправленные команды.
-* **Command Palette (`Ctrl+R`):** мгновенный умный поиск по выполненным ранее командам с подтверждением выполнения.
-* **Информационный дашборд:** детальный просмотр сессии с метаданными и кнопкой быстрого повторного подключения.
-
-### 🧩 Библиотека сниппетов
-* Создание, редактирование и поиск собственных сниппетов с группировкой по категориям (`Docker`, `System`, `Deploy` и др.).
-* Выполнение сниппета в активном терминале по клику с защитным подтверждением.
-
-### 🔒 Безопасность и настройки
-* **Защита мастер-паролем:** блокировка запуска приложения с хэшированием пароля через SHA-256.
-* **Двуязычный интерфейс (RU / EN):** мгновенное переключение языка в 1 клик прямо из шапки приложения или через вкладку настроек.
-* **Резервное копирование:** экспорт и импорт всех настроек и серверов в зашифрованный JSON-файл.
-* **Автоматический Crash Reporter:** при возникновении непредвиденной ошибки приложение выводит нативный диалог с подробностями и сохраняет трассировку в `crash.log`.
+* **⚡ Blazing Fast:** < 20ms startup time, tiny memory footprint (< 35 MB RAM), and 0% CPU consumption when idle.
+* **🛡️ Security by Default:** Automatic host key verification against `~/.ssh/known_hosts` to protect against local network ARP-spoofing and Man-in-the-Middle (MITM) attacks. Master-password locking supported.
+* **🪟 True Split Screen:** Side-by-side terminal session split (`Ctrl+Alt+S`) with independent PTY streaming and a clean, non-intrusive 2px divider.
+* **🔑 SSH Key Studio:** Generate OpenSSH Ed25519 & RSA-4096 key pairs and install them to remote `authorized_keys` in 1 click.
+* **📜 Command Palette & SQLite History:** Intelligent command search (`Ctrl+R`), persistent session history, and execution logs.
+* **🧩 Snippets Library:** Organize and trigger frequently used commands with automatic safety warnings before executing dangerous operations (`rm -rf`, `reboot`, `dd`).
+* **🌐 Seamless Dual Keyboard Layout:** All keyboard shortcuts (`Ctrl+C`, `Ctrl+V`, `Ctrl+N`, `Ctrl+R`, `Ctrl+F`, etc.) work natively on both **English and Russian (QWERTY / ЙЦУКЕН)** keyboard layouts.
+* **🎨 EvertyUI Foundation:** Built from scratch in Rust — complete architectural independence from third-party UI framework limitations.
 
 ---
 
-## ⌨️ Горячие клавиши
+## 🎨 EvertyUI Engine — Custom Native Framework
 
-| Сочетание (EN) | Сочетание (RU) | Действие |
+**EvertyUI** is an independent, low-overhead UI framework built specifically for desktop applications in the **Everty** software ecosystem (including **EvertyDesk Next**, **Viewer**, and **EvertySSH**).
+
+### Core Philosophy
+
+1. **Independent Architecture:** Interface layer never dictates core business logic. Asynchronous subsystems (Tokio reactor, Russh, VTE terminal) run freely in worker threads.
+2. **Sub-millisecond Frame Times:** Frame rasterization is optimized for direct buffer presentation with smart glyph and clamped layout caches.
+3. **Low Latency & High Frame Stability:** Cursor updates and hover events avoid redundant OS message loop dispatches.
+4. **Unified Visual Language:** Clean design tokens, responsive layout containers, and unified control contracts.
+
+Learn more in the [EvertyUI Architecture Guide](docs/ARCHITECTURE.md).
+
+---
+
+## ⚡ Key Features
+
+### 🛡️ Host Key Verification & known_hosts Defense
+* **Automatic Verification:** Checks and records remote server public keys against standard `~/.ssh/known_hosts`.
+* **MITM & ARP-Spoofing Protection:** Rejects tampered keys immediately and displays an informative verification dialog with full SHA-256 fingerprint comparison.
+* **Host Key Management:** Seamlessly accept new keys or remove obsolete host entries directly from the user interface.
+
+### 🖥️ Server Manager (Hosts Inventory)
+* **Quick Organization:** Group servers into environments (`Production`, `Staging`, `Development`, `Personal`).
+* **Multi-Authentication:** System `SSH-Agent` (including Windows OpenSSH Authentication Agent), password, or Ed25519 / RSA private keys.
+* **Smart Clamping:** Long server titles and connection addresses are gracefully clamped with ellipsis, keeping tab bars and cards clean at any screen scale.
+* **Accidental Deletion Protection:** Confirmation modals prevent accidental host loss.
+* **Plaintext TOML Storage:** Configuration is transparently stored in human-readable `~/.evertyssh/hosts.toml`.
+
+### 🔑 Built-in SSH Key Studio
+* Generate **Ed25519** and **RSA-4096** key pairs with custom passphrases and comments.
+* Native system file picker for importing existing private keys.
+* **1-Click Remote Deployment:** Generates, saves to disk, and automatically sends the setup command to `authorized_keys` on the active terminal.
+
+### ⌨️ Advanced VT100 / ANSI Terminal
+* **High Throughput:** Full ANSI escape sequence support, 256 colors, and 24-bit TrueColor.
+* **DEC Private Modes:** Cursor visibility (`?25h`/`?25l`), alternate screen buffer (`?1049h`/`?1049l` for seamless `vim`, `htop`, `nano`, `mc`).
+* **Split View (`Ctrl+Alt+S`):** Monitor two remote sessions simultaneously without clutter.
+* **Terminal Search (`Ctrl+F`):** Case-sensitive search with instant match highlighting and `Enter` / `Shift+Enter` navigation.
+* **Mouse Selection & Clipboard:** Seamless selection, auto-scroll, and right-click context menu.
+
+### 📜 Command History & Session Dashboard
+* Persistent SQLite database (`~/.evertyssh/history.db`) records session duration, commands executed, and connection timestamps.
+* **Command Palette (`Ctrl+R`):** Fuzzy history search with command preview and direct terminal dispatch.
+* **Session Dashboard:** Detailed audit log for individual server sessions.
+
+### 🧩 Command Snippets
+* Library for frequently executed command recipes (`Docker`, `Kubernetes`, `System Monitoring`, `Deploy`).
+* Execution modal with danger level detection (flags commands containing `rm -rf`, `reboot`, `mkfs`, etc.).
+
+### 🔒 Security & Settings
+* **Master Password Protection:** Lock the client on startup with secure password hashing.
+* **Bilingual Interface:** Real-time 1-click toggle between English and Russian (`RU / EN`).
+* **Backup & Restore:** Fast JSON export and import of all servers, settings, and snippets.
+* **About Tab:** Quick links to developer channels, repository, and Everty ecosystem resources.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut (EN) | Shortcut (RU) | Action |
 |---|---|---|
-| `Ctrl + N` | `Ctrl + Т` | Добавить новый сервер |
-| `Ctrl + R` | `Ctrl + К` | Палитра команд / Поиск по истории |
-| `Ctrl + T` | `Ctrl + Е` | Быстрое подключение / Новая сессия |
-| `Ctrl + W` | `Ctrl + Ц` | Закрыть активную сессию / вкладку |
-| `Ctrl + F` | `Ctrl + А` | Поиск по буферу терминала |
-| `Ctrl + Alt + S` | `Ctrl + Alt + Ы` | Включить / выключить разделение экрана (Split Screen) |
-| `Ctrl + V` | `Ctrl + М` | Вставить из буфера обмена (в терминал или активное поле) |
-| `Ctrl + C` | `Ctrl + С` | Скопировать выделение / Сигнал прерывания (SIGINT) |
-| `Ctrl + X` | `Ctrl + Ч` | Вырезать текст из поля ввода |
-| `Ctrl + A` | `Ctrl + Ф` | Выделить весь текст в активном поле |
-| `Shift + Insert` | `Shift + Insert` | Альтернативная вставка в терминал |
-| `Tab` | `Tab` | Переход между полями ввода |
-| `Enter` | `Enter` | Подтвердить ввод / выполнить команду |
-| `Esc` | `Esc` | Закрыть модальное окно / отмена |
+| `Ctrl + N` | `Ctrl + Т` | Add new server (Host dialog) |
+| `Ctrl + R` | `Ctrl + К` | Command Palette / History Search |
+| `Ctrl + T` | `Ctrl + Е` | Quick connect / New session |
+| `Ctrl + W` | `Ctrl + Ц` | Close active tab or split view |
+| `Ctrl + F` | `Ctrl + А` | Search in terminal buffer |
+| `Ctrl + Alt + S` | `Ctrl + Alt + Ы` | Toggle Split Screen view |
+| `Ctrl + V` | `Ctrl + М` | Paste from clipboard |
+| `Ctrl + C` | `Ctrl + С` | Copy selection / Send SIGINT |
+| `Ctrl + X` | `Ctrl + Ч` | Cut text in input fields |
+| `Ctrl + A` | `Ctrl + Ф` | Select all text in active input |
+| `Shift + Insert` | `Shift + Insert` | Alternative paste into terminal |
+| `Tab` | `Tab` | Focus next input field |
+| `Enter` | `Enter` | Confirm input / Execute command |
+| `Esc` | `Esc` | Close dialog / Dismiss overlay |
 
 ---
 
-## 🚀 Сборка и запуск
+## 🚀 Installation & Building
 
-### Требования
-* Rust 1.75+ (stable toolchain)
-* Cargo
+### 📦 Prebuilt Binaries
+Download the latest executable for Windows directly from the [GitHub Releases](https://github.com/vaalimusic/EvertySSH/releases) page:
+* `everty-ssh.exe` (standalone executable)
+* `EvertySSH-windows-x64.zip` (portable archive)
 
-### Сборка релизной версии:
+### 🛠️ Building from Source
+
+#### Prerequisites
+* [Rust](https://www.rust-lang.org/tools/install) 1.75+ (stable toolchain)
+* Cargo package manager
+
+#### Build Steps
 ```bash
-# Клонирование репозитория
+# Clone the repository
 git clone https://github.com/vaalimusic/EvertySSH.git
 cd EvertySSH
 
-# Сборка оптимизированного бинарного файла
-cargo build --release -p everty-ssh
+# Compile optimized release binary
+cargo build --release --bin everty-ssh
 
-# Исполняемый файл появится в:
-# target/release/everty-ssh (или target/release/everty-ssh.exe на Windows)
+# The compiled binary will be located at:
+# target/release/everty-ssh (Linux/macOS) or target/release/everty-ssh.exe (Windows)
 ```
 
-### Запуск в режиме разработки:
+#### Run in Development Mode
 ```bash
-cargo run -p everty-ssh
+cargo run --bin everty-ssh
+```
+
+#### Run Workspace Unit Tests
+```bash
+cargo test --workspace
 ```
 
 ---
 
-## 👨‍💻 Автор и контакты
+## 📚 Documentation & Wiki
 
-**Arthur Valiev**
-
-* 🌐 Официальный сайт: [Everty.ru](https://everty.ru)
-* 🖥️ Продукты EvertyDesk: [Desk.everty.ru](https://desk.everty.ru)
-* ✉️ Связь по электронной почте: [info@everty.ru](mailto:info@everty.ru)
-* 🐙 GitHub репозиторий: [github.com/vaalimusic/EvertySSH](https://github.com/vaalimusic/EvertySSH)
+Explore detailed documentation in the [`docs/`](docs/) directory:
+* [Architecture & EvertyUI Internal Design](docs/ARCHITECTURE.md)
+* [Security, known_hosts & Cryptography](docs/SECURITY.md)
+* [Complete Keyboard Shortcuts Reference](docs/KEYBOARD_SHORTCUTS.md)
+* [Contribution Guidelines](CONTRIBUTING.md)
 
 ---
 
-## 📄 Лицензия
+## 👨‍💻 Author & Contacts
 
-Проект распространяется под свободной лицензией **MIT**. Подробности в файле [LICENSE](LICENSE).
+**Arthur Valiev** — *Creator & Lead Engineer*
+
+* 🌐 Official Website: [everty.ru](https://everty.ru)
+* 🖥️ EvertyDesk Ecosystem: [desk.everty.ru](https://desk.everty.ru)
+* ✈️ Telegram Channel: [@Everty_web](https://t.me/Everty_web)
+* ✉️ Contact Email: [info@everty.ru](mailto:info@everty.ru)
+* 🐙 GitHub: [@vaalimusic](https://github.com/vaalimusic)
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
