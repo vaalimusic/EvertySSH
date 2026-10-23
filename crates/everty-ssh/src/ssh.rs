@@ -1,14 +1,46 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use async_trait::async_trait;
+use crossbeam_channel::Sender;
 use russh::client::{self, Handler};
 use tokio::sync::mpsc;
 
+use crate::app::AppEvent;
 use crate::config::{AuthConfig, HostConfig};
+
+pub fn get_known_hosts_path() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        home.join(".ssh").join("known_hosts")
+    } else {
+        PathBuf::from("known_hosts")
+    }
+}
+
+pub fn remove_known_host_line(path: &Path, line_to_remove: usize) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let mut new_lines = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        if idx + 1 != line_to_remove {
+            new_lines.push(line);
+        }
+    }
+    let mut output = new_lines.join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    std::fs::write(path, output)?;
+    Ok(())
+}
 
 fn format_ssh_error(addr: &str, raw: &str) -> String {
     let lower = raw.to_lowercase();
-    if raw.contains("10061") || lower.contains("connection refused") {
+    if lower.contains("serverkeycheckfailed") || lower.contains("check_server_key") {
+        format!("Соединение прервано: ключ хоста {addr} не подтвержден пользователем")
+    } else if raw.contains("10061") || lower.contains("connection refused") {
         format!("В соединении отказано ({addr}): порт закрыт или служба SSH не запущена")
     } else if raw.contains("10060") || lower.contains("timed out") || lower.contains("timeout") {
         format!("Превышено время ожидания ответа от {addr}: сервер недоступен или заблокирован брандмауэром")
@@ -21,7 +53,12 @@ fn format_ssh_error(addr: &str, raw: &str) -> String {
     }
 }
 
-pub struct SshClientHandler;
+pub struct SshClientHandler {
+    pub session_id: String,
+    pub host: String,
+    pub port: u16,
+    pub event_tx: Sender<AppEvent>,
+}
 
 #[async_trait]
 impl Handler for SshClientHandler {
@@ -29,10 +66,94 @@ impl Handler for SshClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        server_public_key: &russh_keys::key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // Accept host key (in future: verify against ~/.ssh/known_hosts)
-        Ok(true)
+        let kh_path = get_known_hosts_path();
+
+        let check_res = russh_keys::check_known_hosts_path(&self.host, self.port, server_public_key, &kh_path);
+
+        match check_res {
+            Ok(true) => {
+                // Key is already known and strictly matches!
+                Ok(true)
+            }
+            Ok(false) => {
+                // Host is not in known_hosts (first connection)
+                let key_type = server_public_key.name().to_string();
+                let fingerprint = format!("SHA256:{}", server_public_key.fingerprint());
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+                let _ = self.event_tx.send(AppEvent::HostKeyPrompt {
+                    session_id: self.session_id.clone(),
+                    host: self.host.clone(),
+                    port: self.port,
+                    key_type,
+                    fingerprint,
+                    is_changed: false,
+                    old_line: None,
+                    response_tx,
+                });
+
+                match response_rx.await {
+                    Ok(true) => {
+                        let _ = russh_keys::learn_known_hosts_path(&self.host, self.port, server_public_key, &kh_path);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            Err(russh_keys::Error::KeyChanged { line }) => {
+                // Host key changed! MITM warning
+                let key_type = server_public_key.name().to_string();
+                let fingerprint = format!("SHA256:{}", server_public_key.fingerprint());
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+                let _ = self.event_tx.send(AppEvent::HostKeyPrompt {
+                    session_id: self.session_id.clone(),
+                    host: self.host.clone(),
+                    port: self.port,
+                    key_type,
+                    fingerprint,
+                    is_changed: true,
+                    old_line: Some(line),
+                    response_tx,
+                });
+
+                match response_rx.await {
+                    Ok(true) => {
+                        let _ = remove_known_host_line(&kh_path, line);
+                        let _ = russh_keys::learn_known_hosts_path(&self.host, self.port, server_public_key, &kh_path);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            Err(_) => {
+                // Other format or missing path: prompt user
+                let key_type = server_public_key.name().to_string();
+                let fingerprint = format!("SHA256:{}", server_public_key.fingerprint());
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+                let _ = self.event_tx.send(AppEvent::HostKeyPrompt {
+                    session_id: self.session_id.clone(),
+                    host: self.host.clone(),
+                    port: self.port,
+                    key_type,
+                    fingerprint,
+                    is_changed: false,
+                    old_line: None,
+                    response_tx,
+                });
+
+                match response_rx.await {
+                    Ok(true) => {
+                        let _ = russh_keys::learn_known_hosts_path(&self.host, self.port, server_public_key, &kh_path);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+        }
     }
 }
 
@@ -66,17 +187,24 @@ pub async fn connect_ssh(
     initial_cols: u32,
     initial_rows: u32,
     output_tx: mpsc::Sender<Vec<u8>>,
+    event_tx: Sender<AppEvent>,
 ) -> Result<SshSessionHandle, String> {
     let config = Arc::new(client::Config::default());
     let addr = format!("{}:{}", host.hostname, host.port);
 
-    // 1. TCP Connection with 7s timeout
-    let connect_fut = client::connect(config, &addr, SshClientHandler);
-    let mut session = match tokio::time::timeout(Duration::from_secs(7), connect_fut).await {
+    // 1. TCP Connection + Server Key Verification with 30s timeout
+    let handler = SshClientHandler {
+        session_id: session_id.clone(),
+        host: host.hostname.clone(),
+        port: host.port,
+        event_tx,
+    };
+    let connect_fut = client::connect(config, &addr, handler);
+    let mut session = match tokio::time::timeout(Duration::from_secs(30), connect_fut).await {
         Ok(res) => res.map_err(|e| format_ssh_error(&addr, &e.to_string()))?,
         Err(_) => {
             return Err(format!(
-                "Таймаут подключения к {addr} (превышено 7 сек). Сервер недоступен или блокирует порт {}.",
+                "Таймаут подключения к {addr} (превышено 30 сек). Сервер недоступен или блокирует порт {}.",
                 host.port
             ))
         }
@@ -239,8 +367,8 @@ mod tests {
         let host = HostConfig {
             id: "test1".into(),
             name: "test".into(),
-            hostname: "192.0.2.1".into(), // TEST-NET-1 (unroutable)
-            port: 22,
+            hostname: "127.0.0.1".into(),
+            port: 59999, // Unused local port, immediately refused
             username: "root".into(),
             auth: AuthConfig::Password { password: Some("123".into()) },
             group: None,
@@ -250,7 +378,8 @@ mod tests {
             env: std::collections::HashMap::new(),
         };
         let (tx, _rx) = mpsc::channel(10);
-        let res = connect_ssh(host, "sess1".into(), 80, 24, tx).await;
+        let (event_tx, _event_rx) = crossbeam_channel::unbounded();
+        let res = connect_ssh(host, "sess1".into(), 80, 24, tx, event_tx).await;
         assert!(res.is_err());
         println!("Result: {:?}", res.err());
     }
@@ -259,5 +388,26 @@ mod tests {
     async fn test_agent_connect_on_windows() {
         let res = russh_keys::agent::client::AgentClient::connect_env().await;
         println!("Agent connect result on windows: {:?}", res.is_ok());
+    }
+
+    #[test]
+    fn test_remove_known_host_line() {
+        let tmp_dir = std::env::temp_dir();
+        let test_file = tmp_dir.join("test_known_hosts_removal.txt");
+        let initial = "host1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...\nhost2 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...\nhost3 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...\n";
+        std::fs::write(&test_file, initial).unwrap();
+
+        remove_known_host_line(&test_file, 2).unwrap();
+        let updated = std::fs::read_to_string(&test_file).unwrap();
+        assert!(!updated.contains("host2"));
+        assert!(updated.contains("host1"));
+        assert!(updated.contains("host3"));
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[test]
+    fn test_get_known_hosts_path() {
+        let path = get_known_hosts_path();
+        assert!(path.to_string_lossy().contains("known_hosts"));
     }
 }

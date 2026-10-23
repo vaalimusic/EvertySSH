@@ -2878,6 +2878,147 @@ impl UiRenderer {
             }
         }
 
+        // 12.6 Host Key Verification Modal
+        if let Some(host_key) = &app.host_key_modal {
+            builder.fill_rect(LogicalRect::from_xywh(0.0, 0.0, w, h), Color::rgba(0, 0, 0, 190), 0.0);
+
+            let modal_w = 560.0f64.min(w - 40.0);
+            let modal_h = (if host_key.is_changed { 320.0 } else { 280.0 } as f64).min(h - 40.0);
+            let modal_x = (w - modal_w) / 2.0;
+            let modal_y = (h - modal_h) / 2.0;
+            let modal_rect = LogicalRect::from_xywh(modal_x, modal_y, modal_w, modal_h);
+
+            let border_color = if host_key.is_changed {
+                Color::rgba(239, 68, 68, 255)
+            } else {
+                accent_mint
+            };
+
+            builder.fill_rect(modal_rect, Color::rgba(14, 23, 42, 255), 8.0);
+            builder.stroke_rect(modal_rect, border_color, 1.5, 8.0);
+
+            // Icon + Title
+            let icon_id = if host_key.is_changed { ICON_ALERT_ID } else { ICON_CONNECT_ID };
+            let icon_bg = if host_key.is_changed { Color::rgba(239, 68, 68, 40) } else { Color::rgba(45, 212, 191, 40) };
+            let icon_fg = if host_key.is_changed { Color::rgba(239, 68, 68, 255) } else { accent_mint };
+
+            builder.fill_rect(
+                LogicalRect::from_xywh(modal_x + 24.0, modal_y + 20.0, 36.0, 36.0),
+                icon_bg,
+                18.0,
+            );
+            builder.icon(
+                icon_id,
+                LogicalRect::from_xywh(modal_x + 32.0, modal_y + 28.0, 20.0, 20.0),
+                icon_fg,
+            );
+
+            let title_text = if host_key.is_changed {
+                tr(lang, "⚠️ КЛЮЧ ХОСТА ИЗМЕНИЛСЯ!", "⚠️ REMOTE HOST KEY CHANGED!")
+            } else {
+                tr(lang, "Проверка подлинности сервера", "Server Authenticity Verification")
+            };
+            let title_l = self.shape_cached(title_text, StyleId::Title, None);
+            builder.text(LogicalPoint::new(modal_x + 70.0, modal_y + 20.0), title_l, if host_key.is_changed { Color::rgba(248, 113, 113, 255) } else { text_main });
+
+            let sub_info = format!("{}: {}:{} ({})", tr(lang, "Сервер", "Server"), host_key.host, host_key.port, host_key.key_type);
+            let sub_l = self.shape_cached(&sub_info, StyleId::Small, Some(LogicalPx(modal_w - 95.0)));
+            builder.text(LogicalPoint::new(modal_x + 70.0, modal_y + 42.0), sub_l, text_dim);
+
+            let mut cur_y = modal_y + 68.0;
+
+            if host_key.is_changed {
+                // Dangerous warning banner
+                let banner_rect = LogicalRect::from_xywh(modal_x + 24.0, cur_y, modal_w - 48.0, 36.0);
+                builder.fill_rect(banner_rect, Color::rgba(239, 68, 68, 30), 5.0);
+                builder.stroke_rect(banner_rect, Color::rgba(239, 68, 68, 160), 1.0, 5.0);
+
+                let line_str = host_key.old_line.map(|l| format!(" (строка #{l})")).unwrap_or_default();
+                let warn_text = format!("{}! {}{line_str}", tr(lang, "Возможен перехват MITM", "Possible MITM attack"), tr(lang, "Ключ в known_hosts не совпадает", "Key in known_hosts differs"));
+                let warn_l = self.shape_cached(&warn_text, StyleId::Small, Some(LogicalPx(modal_w - 60.0)));
+                builder.text(LogicalPoint::new(modal_x + 36.0, cur_y + 9.0), warn_l, Color::rgba(252, 165, 165, 255));
+                cur_y += 44.0;
+            } else {
+                let note = tr(lang, "Не удается установить подлинность хоста. Отпечаток ключа (Fingerprint):", "Authenticity of host cannot be established. Key fingerprint:");
+                let note_l = self.shape_cached(note, StyleId::Small, Some(LogicalPx(modal_w - 48.0)));
+                builder.text(LogicalPoint::new(modal_x + 24.0, cur_y + 4.0), note_l, text_main);
+                cur_y += 28.0;
+            }
+
+            // Fingerprint Box + Copy Button
+            let fp_box_w = modal_w - 146.0;
+            let fp_box_rect = LogicalRect::from_xywh(modal_x + 24.0, cur_y, fp_box_w, 34.0);
+            builder.fill_rect(fp_box_rect, Color::rgba(10, 16, 30, 255), 5.0);
+            builder.stroke_rect(fp_box_rect, card_border, 1.0, 5.0);
+
+            builder.push_clip(LogicalRect::from_xywh(modal_x + 28.0, cur_y + 2.0, fp_box_w - 8.0, 30.0));
+            let fp_l = self.shape_cached(&host_key.fingerprint, StyleId::Mono, Some(LogicalPx(fp_box_w - 16.0)));
+            builder.text(LogicalPoint::new(modal_x + 34.0, cur_y + 8.0), fp_l, Color::rgba(56, 189, 248, 255));
+            let _ = builder.pop_clip();
+
+            // Copy button
+            let is_copy_h = app.hover == HoverTarget::HostKeyModalCopy;
+            let copy_btn_rect = LogicalRect::from_xywh(modal_x + modal_w - 114.0, cur_y, 90.0, 34.0);
+            builder.fill_rect(copy_btn_rect, if is_copy_h { Color::rgba(35, 55, 95, 230) } else { Color::rgba(20, 35, 65, 200) }, 5.0);
+            builder.stroke_rect(copy_btn_rect, Color::rgba(45, 212, 191, 100), 1.0, 5.0);
+            builder.icon(ICON_COPY_ID, LogicalRect::from_xywh(modal_x + modal_w - 106.0, cur_y + 10.0, 14.0, 14.0), accent_mint);
+            let copy_label = if host_key.copied_feedback {
+                tr(lang, "Готово!", "Copied!")
+            } else {
+                tr(lang, "Копия", "Copy")
+            };
+            let copy_l = self.shape_cached(copy_label, StyleId::Small, None);
+            builder.text(LogicalPoint::new(modal_x + modal_w - 86.0, cur_y + 8.0), copy_l, accent_mint);
+
+            cur_y += 44.0;
+
+            // Prompt note
+            let prompt_msg = if host_key.is_changed {
+                tr(lang, "Рекомендуется отменить соединение и связаться с владельцем сервера.", "Recommended to abort connection and verify with server owner.")
+            } else {
+                tr(lang, "Вы уверены, что хотите продолжить подключение и сохранить этот ключ?", "Are you sure you want to continue connecting and trust this key?")
+            };
+            let prompt_l = self.shape_cached(prompt_msg, StyleId::Small, Some(LogicalPx(modal_w - 48.0)));
+            builder.text(LogicalPoint::new(modal_x + 24.0, cur_y + 2.0), prompt_l, text_muted);
+
+            // Bottom action buttons
+            let btn_y = modal_y + modal_h - 52.0;
+
+            if host_key.is_changed {
+                // Reject button (Esc - Prominent/Safe)
+                let is_reject_h = app.hover == HoverTarget::HostKeyModalReject;
+                let reject_rect = LogicalRect::from_xywh(modal_x + modal_w - 380.0, btn_y, 150.0, 34.0);
+                builder.fill_rect(reject_rect, if is_reject_h { Color::rgba(220, 38, 38, 255) } else { Color::rgba(239, 68, 68, 230) }, 5.0);
+                builder.icon(ICON_CLOSE_ID, LogicalRect::from_xywh(modal_x + modal_w - 372.0, btn_y + 10.0, 14.0, 14.0), Color::rgba(255, 255, 255, 255));
+                let rej_l = self.shape_cached(tr(lang, "Отклонить (Esc)", "Reject (Esc)"), StyleId::SansBold, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 352.0, btn_y + 7.0), rej_l, Color::rgba(255, 255, 255, 255));
+
+                // Accept button (Update & continue - Caution)
+                let is_accept_h = app.hover == HoverTarget::HostKeyModalAccept;
+                let accept_rect = LogicalRect::from_xywh(modal_x + modal_w - 220.0, btn_y, 200.0, 34.0);
+                builder.fill_rect(accept_rect, if is_accept_h { Color::rgba(45, 55, 80, 240) } else { Color::rgba(25, 35, 55, 200) }, 5.0);
+                builder.stroke_rect(accept_rect, Color::rgba(239, 68, 68, 140), 1.0, 5.0);
+                let acc_l = self.shape_cached(tr(lang, "Обновить ключ и войти", "Update Key & Proceed"), StyleId::Small, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 208.0, btn_y + 8.0), acc_l, Color::rgba(248, 113, 113, 255));
+            } else {
+                // Cancel button (Esc)
+                let is_cancel_h = app.hover == HoverTarget::HostKeyModalReject;
+                let cancel_rect = LogicalRect::from_xywh(modal_x + modal_w - 360.0, btn_y, 110.0, 34.0);
+                builder.fill_rect(cancel_rect, if is_cancel_h { Color::rgba(30, 48, 85, 230) } else { Color::rgba(20, 32, 58, 200) }, 5.0);
+                builder.stroke_rect(cancel_rect, card_border, 1.0, 5.0);
+                let cancel_l = self.shape_cached(tr(lang, "Отмена (Esc)", "Cancel (Esc)"), StyleId::Small, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 348.0, btn_y + 8.0), cancel_l, text_dim);
+
+                // Trust & Connect button (Enter)
+                let is_accept_h = app.hover == HoverTarget::HostKeyModalAccept;
+                let accept_rect = LogicalRect::from_xywh(modal_x + modal_w - 230.0, btn_y, 210.0, 34.0);
+                builder.fill_rect(accept_rect, if is_accept_h { Color::rgba(45, 212, 191, 230) } else { accent_mint }, 5.0);
+                builder.icon(ICON_CONNECT_ID, LogicalRect::from_xywh(modal_x + modal_w - 222.0, btn_y + 10.0, 14.0, 14.0), Color::rgba(8, 13, 25, 255));
+                let acc_l = self.shape_cached(tr(lang, "Доверять и войти (Enter)", "Trust & Connect (Enter)"), StyleId::SansBold, None);
+                builder.text(LogicalPoint::new(modal_x + modal_w - 202.0, btn_y + 7.0), acc_l, bg_app);
+            }
+        }
+
         // 13. Settings Modal
         if let Some(settings) = &app.settings_modal {
             if settings.is_open {

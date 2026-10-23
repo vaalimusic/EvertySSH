@@ -383,6 +383,23 @@ impl EvertySshApp {
                 self.state.open_confirm_delete_host(idx);
                 self.request_redraw();
             }
+            HoverTarget::HostKeyModalAccept => {
+                self.state.accept_host_key();
+                self.request_redraw();
+            }
+            HoverTarget::HostKeyModalReject => {
+                self.state.reject_host_key();
+                self.request_redraw();
+            }
+            HoverTarget::HostKeyModalCopy => {
+                if let Some(m) = &mut self.state.host_key_modal {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(m.fingerprint.clone());
+                        m.copied_feedback = true;
+                    }
+                }
+                self.request_redraw();
+            }
             HoverTarget::ConfirmDeleteConfirm => {
                 self.state.execute_confirm_delete_host();
                 self.request_redraw();
@@ -1154,6 +1171,25 @@ impl ApplicationHandler for EvertySshApp {
                         }
                     }
                     return;
+                }
+
+                // If Host Key Prompt Modal is Open
+                if let Some(host_key) = &self.state.host_key_modal {
+                    match &logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.state.reject_host_key();
+                            self.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if !host_key.is_changed {
+                                self.state.accept_host_key();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        _ => return,
+                    }
                 }
 
                 // If Confirm Delete Modal is Open

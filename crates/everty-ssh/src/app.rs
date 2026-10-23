@@ -919,6 +919,10 @@ pub enum HoverTarget {
     ModalSnippetField(usize),
     ModalSnippetSave,
     ModalSnippetClose,
+    // Host Key Modal
+    HostKeyModalAccept,
+    HostKeyModalReject,
+    HostKeyModalCopy,
     // Settings & Security
     HeaderSettingsBtn,
     HeaderLangBtn,
@@ -998,10 +1002,32 @@ impl Default for AddHostModal {
     }
 }
 
+pub struct HostKeyPromptModal {
+    pub session_id: String,
+    pub host: String,
+    pub port: u16,
+    pub key_type: String,
+    pub fingerprint: String,
+    pub is_changed: bool,
+    pub old_line: Option<usize>,
+    pub response_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+    pub copied_feedback: bool,
+}
+
 pub enum AppEvent {
     SshOutput { session_id: String, data: Vec<u8> },
     SshConnected { session_id: String, handle: SshSessionHandle },
     SshDisconnected { session_id: String, error: Option<String> },
+    HostKeyPrompt {
+        session_id: String,
+        host: String,
+        port: u16,
+        key_type: String,
+        fingerprint: String,
+        is_changed: bool,
+        old_line: Option<usize>,
+        response_tx: tokio::sync::oneshot::Sender<bool>,
+    },
 }
 
 pub struct SessionTab {
@@ -1055,6 +1081,7 @@ pub struct AppState {
     pub confirm_delete_modal: Option<ConfirmDeleteHostModal>,
     pub confirm_delete_snippet_modal: Option<ConfirmDeleteSnippetModal>,
     pub confirm_run_modal: Option<ConfirmRunCommandModal>,
+    pub host_key_modal: Option<HostKeyPromptModal>,
     pub settings_modal: Option<SettingsModal>,
     pub input_context_menu: Option<InputContextMenu>,
     pub tooltip: Option<TooltipState>,
@@ -1137,6 +1164,7 @@ impl AppState {
             confirm_delete_modal: None,
             confirm_delete_snippet_modal: None,
             confirm_run_modal: None,
+            host_key_modal: None,
             settings_modal: None,
             input_context_menu: None,
             tooltip: None,
@@ -1241,6 +1269,51 @@ impl AppState {
             let changed = old_hover != new_hover;
             self.hover = new_hover;
             return (changed, cursor);
+        }
+
+        // -0.05 Host Key Prompt Modal
+        if let Some(host_key) = &self.host_key_modal {
+            let modal_w = 560.0f64.min(w - 40.0);
+            let modal_h = (if host_key.is_changed { 320.0 } else { 280.0 } as f64).min(h - 40.0);
+            let modal_x = (w - modal_w) / 2.0;
+            let modal_y = (h - modal_h) / 2.0;
+
+            if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                new_hover = HoverTarget::ModalDialogBody;
+                cursor = CursorIcon::Default;
+
+                let fp_y = modal_y + 110.0;
+                if y >= fp_y && y <= fp_y + 34.0 && x >= modal_x + modal_w - 110.0 && x <= modal_x + modal_w - 24.0 {
+                    new_hover = HoverTarget::HostKeyModalCopy;
+                    cursor = CursorIcon::Pointer;
+                }
+
+                let btn_y = modal_y + modal_h - 52.0;
+                if y >= btn_y && y <= btn_y + 36.0 {
+                    if host_key.is_changed {
+                        if x >= modal_x + modal_w - 220.0 && x <= modal_x + modal_w - 20.0 {
+                            new_hover = HoverTarget::HostKeyModalAccept;
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + modal_w - 380.0 && x <= modal_x + modal_w - 230.0 {
+                            new_hover = HoverTarget::HostKeyModalReject;
+                            cursor = CursorIcon::Pointer;
+                        }
+                    } else {
+                        if x >= modal_x + modal_w - 230.0 && x <= modal_x + modal_w - 20.0 {
+                            new_hover = HoverTarget::HostKeyModalAccept;
+                            cursor = CursorIcon::Pointer;
+                        } else if x >= modal_x + modal_w - 360.0 && x <= modal_x + modal_w - 240.0 {
+                            new_hover = HoverTarget::HostKeyModalReject;
+                            cursor = CursorIcon::Pointer;
+                        }
+                    }
+                }
+                let changed = old_hover != new_hover;
+                self.hover = new_hover;
+                return (changed, cursor);
+            }
+            self.hover = HoverTarget::None;
+            return (old_hover != HoverTarget::None, CursorIcon::Default);
         }
 
         // 0. Confirm Delete Host Modal
@@ -2644,6 +2717,28 @@ impl AppState {
                     }
                     self.refresh_recent_sessions();
                 }
+                AppEvent::HostKeyPrompt {
+                    session_id,
+                    host,
+                    port,
+                    key_type,
+                    fingerprint,
+                    is_changed,
+                    old_line,
+                    response_tx,
+                } => {
+                    self.host_key_modal = Some(HostKeyPromptModal {
+                        session_id,
+                        host,
+                        port,
+                        key_type,
+                        fingerprint,
+                        is_changed,
+                        old_line,
+                        response_tx: Some(response_tx),
+                        copied_feedback: false,
+                    });
+                }
             }
         }
         updated
@@ -2788,6 +2883,22 @@ impl AppState {
         }
 
         true
+    }
+
+    pub fn accept_host_key(&mut self) {
+        if let Some(mut modal) = self.host_key_modal.take() {
+            if let Some(tx) = modal.response_tx.take() {
+                let _ = tx.send(true);
+            }
+        }
+    }
+
+    pub fn reject_host_key(&mut self) {
+        if let Some(mut modal) = self.host_key_modal.take() {
+            if let Some(tx) = modal.response_tx.take() {
+                let _ = tx.send(false);
+            }
+        }
     }
 
     pub fn open_confirm_delete_host(&mut self, host_idx: usize) {
@@ -3124,8 +3235,9 @@ impl AppState {
         });
 
         let s_id_task = session_id.clone();
+        let event_tx_task = event_tx.clone();
         self.tokio_handle.spawn(async move {
-            match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx).await {
+            match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx, event_tx_task).await {
                 Ok(handle) => {
                     let is_conn = handle.is_connected.clone();
                     let s_id_mon = s_id_task.clone();
@@ -3214,8 +3326,9 @@ impl AppState {
             });
 
             let s_id_task = new_session_id.clone();
+            let event_tx_task = event_tx.clone();
             self.tokio_handle.spawn(async move {
-                match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx).await {
+                match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx, event_tx_task).await {
                     Ok(handle) => {
                         let is_conn = handle.is_connected.clone();
                         let s_id_mon = s_id_task.clone();
@@ -3762,6 +3875,9 @@ impl AppState {
             HoverTarget::SidebarSearchHost => Some(tr(lang, "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)", "Search servers by name, host, user or group (Esc to clear)")),
             HoverTarget::SidebarSearchSnippet => Some(tr(lang, "Поиск сохраненных сниппетов (Esc для сброса)", "Search saved snippets (Esc to clear)")),
             HoverTarget::SidebarSearchCommand => Some(tr(lang, "Поиск в истории команд", "Search command history")),
+            HoverTarget::HostKeyModalAccept => Some(tr(lang, "Подтвердить ключ хоста и продолжить подключение", "Accept host key and continue connection")),
+            HoverTarget::HostKeyModalReject => Some(tr(lang, "Отклонить ключ и разорвать соединение (Esc)", "Reject host key and abort connection (Esc)")),
+            HoverTarget::HostKeyModalCopy => Some(tr(lang, "Скопировать отпечаток (fingerprint) в буфер", "Copy fingerprint to clipboard")),
             HoverTarget::ConfirmDeleteConfirm => Some(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
             HoverTarget::ConfirmDeleteCancel => Some(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
             HoverTarget::SettingsClose => Some(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
