@@ -145,15 +145,13 @@ impl UiRenderer {
         }
 
         let inner_w = (rect.size.width.0 - 20.0).max(10.0);
-        let approx_char_w = 7.8;
-        let max_visible_chars = ((inner_w / approx_char_w).floor() as usize).max(4);
 
         if inp.text.is_empty() {
             let p_layout = self.shape_cached(placeholder, StyleId::Sans, None);
             builder.text(LogicalPoint::new(rect.origin.x.0 + 10.0, rect.origin.y.0 + 6.0), p_layout, text_muted);
             if is_focused && caret_visible {
                 builder.fill_rect(
-                    LogicalRect::from_xywh(rect.origin.x.0 + 10.0, rect.origin.y.0 + 6.0, 2.0, 18.0),
+                    LogicalRect::from_xywh(rect.origin.x.0 + 10.0, rect.origin.y.0 + 5.0, 2.0, 20.0),
                     accent_mint,
                     1.0,
                 );
@@ -172,11 +170,54 @@ impl UiRenderer {
         if is_focused {
             if inp.cursor < offset {
                 offset = inp.cursor;
-            } else if inp.cursor >= offset + max_visible_chars {
-                offset = inp.cursor.saturating_sub(max_visible_chars) + 1;
+            } else {
+                // Ensure text from offset to cursor fits in inner_w
+                while offset < inp.cursor {
+                    let sub: String = display_chars.iter().skip(offset).take(inp.cursor - offset).collect();
+                    let w = self.shape_cached(&sub, StyleId::Sans, None).metrics.size.width.0;
+                    if w <= inner_w {
+                        break;
+                    }
+                    offset += 1;
+                }
+            }
+            // Expand offset to the left if the remaining text to the end easily fits in inner_w
+            while offset > 0 {
+                let sub: String = display_chars.iter().skip(offset - 1).collect();
+                let w = self.shape_cached(&sub, StyleId::Sans, None).metrics.size.width.0;
+                if w <= inner_w {
+                    offset -= 1;
+                } else {
+                    break;
+                }
             }
         }
-        let take_count = (max_visible_chars + 1).min(total_chars.saturating_sub(offset));
+
+        // Compute take_count: greedily take all characters that physically fit in inner_w
+        let remaining = total_chars.saturating_sub(offset);
+        let rem_str: String = display_chars.iter().skip(offset).collect();
+        let take_count = if self.shape_cached(&rem_str, StyleId::Sans, None).metrics.size.width.0 <= inner_w {
+            remaining
+        } else {
+            let mut low = 1;
+            let mut high = remaining;
+            let mut best = 1;
+            while low <= high {
+                let mid = (low + high) / 2;
+                let sub: String = display_chars.iter().skip(offset).take(mid).collect();
+                let w = self.shape_cached(&sub, StyleId::Sans, None).metrics.size.width.0;
+                if w <= inner_w + 2.0 {
+                    best = mid;
+                    low = mid + 1;
+                } else {
+                    if mid == 0 {
+                        break;
+                    }
+                    high = mid - 1;
+                }
+            }
+            best
+        };
         let visible_str: String = display_chars.iter().skip(offset).take(take_count).collect();
 
         // Render selection highlight if any
@@ -188,15 +229,23 @@ impl UiRenderer {
                     if rel_end > rel_start {
                         let prefix: String = display_chars.iter().skip(offset).take(rel_start).collect();
                         let sel_part: String = display_chars.iter().skip(offset + rel_start).take(rel_end - rel_start).collect();
-                        let p_w = if prefix.is_empty() { 0.0 } else {
+                        let p_w = if prefix.is_empty() {
+                            0.0
+                        } else {
                             self.shape_cached(&prefix, StyleId::Sans, None).metrics.size.width.0
                         };
                         let s_w = self.shape_cached(&sel_part, StyleId::Sans, None).metrics.size.width.0;
-                        builder.fill_rect(
-                            LogicalRect::from_xywh(rect.origin.x.0 + 10.0 + p_w, rect.origin.y.0 + 5.0, s_w.min(inner_w - p_w), 20.0),
-                            Color::rgba(45, 212, 191, 75),
-                            2.0,
+                        let fill_w = s_w.min(inner_w - p_w).max(4.0);
+                        let sel_rect = LogicalRect::from_xywh(
+                            rect.origin.x.0 + 10.0 + p_w,
+                            rect.origin.y.0 + 4.0,
+                            fill_w,
+                            22.0,
                         );
+                        // Selection background fill
+                        builder.fill_rect(sel_rect, Color::rgba(45, 212, 191, 75), 3.0);
+                        // Crisp selection outline border
+                        builder.stroke_rect(sel_rect, Color::rgba(45, 212, 191, 180), 1.0, 3.0);
                     }
                 }
             }
@@ -217,7 +266,7 @@ impl UiRenderer {
                 let caret_x = rect.origin.x.0 + 10.0 + prefix_w;
                 if caret_x <= rect.origin.x.0 + rect.size.width.0 - 6.0 {
                     builder.fill_rect(
-                        LogicalRect::from_xywh(caret_x, rect.origin.y.0 + 6.0, 2.0, 18.0),
+                        LogicalRect::from_xywh(caret_x, rect.origin.y.0 + 5.0, 2.0, 20.0),
                         accent_mint,
                         1.0,
                     );
@@ -226,6 +275,7 @@ impl UiRenderer {
         }
 
         // Draw subtle bottom scroll track & thumb and edge indicators when text overflows
+        let max_visible_chars = take_count;
         if total_chars > max_visible_chars {
             let track_x = rect.origin.x.0 + 8.0;
             let track_y = rect.origin.y.0 + rect.size.height.0 - 2.5;

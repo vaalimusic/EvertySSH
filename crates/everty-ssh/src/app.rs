@@ -1994,13 +1994,33 @@ impl AppState {
         let anchor = self.input_select_anchor;
         let origin_x = self.input_select_origin_x;
         if let Some(inp) = self.get_text_input_mut(fid) {
-            let click_offset_px = (current_x - origin_x).max(0.0);
-            let approx_char_w = 7.8;
             let total_chars = inp.text.chars().count();
-            let clicked_char = (click_offset_px / approx_char_w).round().max(0.0) as usize;
-            let current_cursor = (inp.scroll_offset + clicked_char).min(total_chars);
-
             let mut changed = false;
+
+            let current_cursor = if current_x <= origin_x {
+                // Dragging to/past left edge -> select to 0 and auto-scroll left
+                if inp.scroll_offset > 0 {
+                    inp.scroll_offset = inp.scroll_offset.saturating_sub(2);
+                    changed = true;
+                }
+                0
+            } else {
+                let click_offset_px = current_x - origin_x;
+                // If dragging past 420px (towards/past the right edge of modal inputs)
+                if click_offset_px > 430.0 {
+                    // Auto-scroll towards end and select to total_chars
+                    if inp.scroll_offset + 2 < total_chars {
+                        inp.scroll_offset = (inp.scroll_offset + 2).min(total_chars);
+                        changed = true;
+                    }
+                    total_chars
+                } else {
+                    let approx_char_w = 7.0;
+                    let clicked_char = (click_offset_px / approx_char_w).round() as usize;
+                    (inp.scroll_offset + clicked_char).min(total_chars)
+                }
+            };
+
             if inp.cursor != current_cursor {
                 inp.cursor = current_cursor;
                 changed = true;
@@ -2037,15 +2057,18 @@ impl AppState {
         fid: InputFieldId,
         logical_x: f64,
         input_start_x: f64,
-        is_double_click: bool,
+        click_count: usize,
     ) {
         let anchor = if let Some(inp) = self.get_text_input_mut(fid) {
-            if is_double_click {
+            if click_count >= 3 {
+                inp.select_all();
+                None
+            } else if click_count == 2 {
                 inp.select_word_at_cursor();
                 None
             } else {
                 let click_offset_px = (logical_x - input_start_x).max(0.0);
-                inp.set_cursor_from_click(click_offset_px, 7.8);
+                inp.set_cursor_from_click(click_offset_px, 7.0);
                 Some(inp.cursor)
             }
         } else {
@@ -2063,21 +2086,23 @@ impl AppState {
         logical_y: f64,
         label_y: f64,
         input_start_x: f64,
-        is_double_click: bool,
+        click_count: usize,
     ) {
         self.add_snippet_modal.active_field = idx;
         let fid = InputFieldId::AddSnippet(idx);
         let anchor = if let Some(inp) = self.get_text_input_mut(fid) {
-            if is_double_click {
+            if click_count >= 3 {
+                inp.select_all();
+                None
+            } else if click_count == 2 {
                 inp.select_word_at_cursor();
                 None
             } else if logical_y < label_y + 18.0 {
-                inp.cursor = inp.text.chars().count();
-                inp.clear_selection();
-                Some(inp.cursor)
+                inp.select_all();
+                None
             } else {
                 let click_offset_px = (logical_x - input_start_x).max(0.0);
-                inp.set_cursor_from_click(click_offset_px, 7.8);
+                inp.set_cursor_from_click(click_offset_px, 7.0);
                 Some(inp.cursor)
             }
         } else {
@@ -3707,12 +3732,12 @@ mod tests {
 
         // Click at character index 5 ("systemctl...")
         let input_origin_x = 100.0;
-        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 5.0 * 7.8, input_origin_x, false);
+        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 5.0 * 7.0, input_origin_x, 1);
         assert!(app.is_input_selecting);
         assert_eq!(app.add_snippet_modal.command.cursor, 5);
 
         // Drag to character index 14
-        let changed = app.update_input_selection(input_origin_x + 14.0 * 7.8);
+        let changed = app.update_input_selection(input_origin_x + 14.0 * 7.0);
         assert!(changed);
         assert_eq!(app.add_snippet_modal.command.cursor, 14);
         assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
@@ -3722,6 +3747,10 @@ mod tests {
         assert!(ended);
         assert!(!app.is_input_selecting);
         assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
+
+        // Test triple click selects whole line
+        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 10.0, input_origin_x, 3);
+        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((0, 28)));
     }
 
     #[test]
