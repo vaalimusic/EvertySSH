@@ -26,6 +26,8 @@ const ICON_REFRESH_ID: IconId = IconId(20);
 const ICON_SPLIT_ID: IconId = IconId(21);
 const ICON_UP_ID: IconId = IconId(22);
 const ICON_DOWN_ID: IconId = IconId(23);
+const ICON_EYE_ID: IconId = IconId(24);
+const ICON_EYE_OFF_ID: IconId = IconId(25);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StyleId {
@@ -826,6 +828,14 @@ impl UiRenderer {
         // 14. Chevron Down Icon
         let down_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
         let _ = renderer.register_svg_icon(ICON_DOWN_ID, down_svg);
+
+        // 15. Eye (Show Password)
+        let eye_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
+        let _ = renderer.register_svg_icon(ICON_EYE_ID, eye_svg);
+
+        // 16. Eye Off (Hide Password)
+        let eye_off_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>"#;
+        let _ = renderer.register_svg_icon(ICON_EYE_OFF_ID, eye_off_svg);
     }
 
     pub fn render_frame(
@@ -1778,7 +1788,8 @@ impl UiRenderer {
                 builder.text(LogicalPoint::new(modal_x + 24.0, f_y + 7.0), l_layout, text_dim);
 
                 let inp_x = modal_x + 160.0;
-                let inp_w = modal_w - 184.0;
+                let eye_btn_w = 34.0;
+                let inp_w = modal_w - 184.0 - eye_btn_w - 8.0;
                 let inp_rect = LogicalRect::from_xywh(inp_x, f_y, inp_w, 30.0);
 
                 self.draw_input_box(
@@ -1788,13 +1799,23 @@ impl UiRenderer {
                     is_focused,
                     is_hover,
                     tr(lang, "Введите пароль", "Enter password"),
-                    true,
-                    app.caret_visible,
+                    !m.show_password,
+                    app.caret_visible && is_focused,
                     accent_mint,
                     card_border,
                     text_main,
                     text_muted,
                 );
+
+                // Eye toggle button
+                let eye_x = inp_x + inp_w + 8.0;
+                let eye_rect = LogicalRect::from_xywh(eye_x, f_y, eye_btn_w, 30.0);
+                let is_eye_hover = app.hover == HoverTarget::ModalTogglePassword;
+                builder.fill_rect(eye_rect, if is_eye_hover { card_hover_bg } else { Color::rgba(20, 32, 58, 255) }, 4.0);
+                builder.stroke_rect(eye_rect, if is_eye_hover { accent_mint } else { card_border }, 1.0, 4.0);
+                let icon_id = if m.show_password { ICON_EYE_OFF_ID } else { ICON_EYE_ID };
+                let icon_color = if is_eye_hover || m.show_password { accent_mint } else { text_dim };
+                builder.icon(icon_id, LogicalRect::from_xywh(eye_x + 9.0, f_y + 7.0, 16.0, 16.0), icon_color);
 
                 f_y += 38.0;
             }
@@ -2819,7 +2840,9 @@ impl UiRenderer {
                             let l_l = self.shape_cached(lbl, StyleId::SansBold, None);
                             builder.text(LogicalPoint::new(modal_x + 24.0, cy + 6.0), l_l, text_dim);
 
-                            let input_rect = LogicalRect::from_xywh(modal_x + 190.0, cy, modal_w - 220.0, 32.0);
+                            let eye_btn_w = 34.0;
+                            let inp_w = modal_w - 220.0 - eye_btn_w - 8.0;
+                            let input_rect = LogicalRect::from_xywh(modal_x + 190.0, cy, inp_w, 32.0);
                             let is_focused = app.focused_input == Some(InputFieldId::SettingsSecurity(f_idx));
                             let is_hover = app.hover == HoverTarget::SettingsSecurityField(f_idx);
 
@@ -2830,13 +2853,22 @@ impl UiRenderer {
                                 is_focused,
                                 is_hover,
                                 tr(lang, "Введите пароль...", "Enter password..."),
-                                true,
+                                !settings.show_passwords,
                                 app.caret_visible && is_focused,
                                 accent_mint,
                                 card_border,
                                 text_main,
                                 text_muted,
                             );
+
+                            let eye_x = modal_x + 190.0 + inp_w + 8.0;
+                            let eye_rect = LogicalRect::from_xywh(eye_x, cy, eye_btn_w, 32.0);
+                            let is_eye_hover = app.hover == HoverTarget::SettingsTogglePassword;
+                            builder.fill_rect(eye_rect, if is_eye_hover { card_hover_bg } else { Color::rgba(20, 32, 58, 255) }, 4.0);
+                            builder.stroke_rect(eye_rect, if is_eye_hover { accent_mint } else { card_border }, 1.0, 4.0);
+                            let icon_id = if settings.show_passwords { ICON_EYE_OFF_ID } else { ICON_EYE_ID };
+                            let icon_color = if is_eye_hover || settings.show_passwords { accent_mint } else { text_dim };
+                            builder.icon(icon_id, LogicalRect::from_xywh(eye_x + 9.0, cy + 8.0, 16.0, 16.0), icon_color);
 
                             cy += 44.0;
                         }

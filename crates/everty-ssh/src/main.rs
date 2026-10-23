@@ -220,6 +220,10 @@ impl EvertySshApp {
                 self.state.open_key_tool_generator();
                 self.request_redraw();
             }
+            HoverTarget::ModalTogglePassword => {
+                self.state.add_host_modal.show_password = !self.state.add_host_modal.show_password;
+                self.request_redraw();
+            }
             HoverTarget::KeyToolAlgo(algo) => {
                 self.state.key_tool_modal.algo = algo;
                 let def_name = match algo {
@@ -458,6 +462,12 @@ impl EvertySshApp {
             HoverTarget::SettingsToggleConfirmDelete => {
                 if let Some(m) = &mut self.state.settings_modal {
                     m.confirm_delete = !m.confirm_delete;
+                }
+                self.request_redraw();
+            }
+            HoverTarget::SettingsTogglePassword => {
+                if let Some(m) = &mut self.state.settings_modal {
+                    m.show_passwords = !m.show_passwords;
                 }
                 self.request_redraw();
             }
@@ -1121,29 +1131,11 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            self.state.search_state.query.move_left();
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            self.state.search_state.query.move_right();
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            self.state.search_state.query.delete_forward();
-                            self.state.update_terminal_search();
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.search_state.query.delete_back();
-                            self.state.update_terminal_search();
-                            self.request_redraw();
-                            return;
-                        }
                         _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
+                            }
                             if let Some(t) = text {
                                 self.state.search_state.query.insert_str(&t);
                                 self.state.update_terminal_search();
@@ -1242,12 +1234,11 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.handle_key_input("\x08");
-                            self.request_redraw();
-                            return;
-                        }
                         _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
+                            }
                             if let Some(t) = text {
                                 self.state.handle_key_input(&t);
                                 self.request_redraw();
@@ -1299,57 +1290,16 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            if let Some(inp) = self.state.get_text_input_mut(f_id) {
-                                inp.move_left();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            if let Some(inp) = self.state.get_text_input_mut(f_id) {
-                                inp.move_right();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Home) => {
-                            if let Some(inp) = self.state.get_text_input_mut(f_id) {
-                                inp.move_home();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::End) => {
-                            if let Some(inp) = self.state.get_text_input_mut(f_id) {
-                                inp.move_end();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            if let Some(inp) = self.state.get_text_input_mut(f_id) {
-                                inp.delete_forward();
-                                if f_id == InputFieldId::SnippetSearch {
-                                    self.state.refresh_snippets();
-                                } else if f_id == InputFieldId::CommandSearch {
-                                    self.state.refresh_command_search();
-                                }
-                                self.request_redraw();
-                                return;
-                            }
-                        }
                         Key::Named(NamedKey::Enter) => {
                             self.state.handle_key_input("\r");
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.handle_key_input("\x08");
-                            self.request_redraw();
-                            return;
-                        }
                         _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
+                            }
                             if let Some(t) = text {
                                 self.state.handle_key_input(&t);
                                 self.request_redraw();
@@ -1363,9 +1313,6 @@ impl ApplicationHandler for EvertySshApp {
                 if self.state.add_snippet_modal.is_open {
                     self.state.caret_visible = true;
                     self.state.caret_blink_time = Instant::now();
-
-                    let active_fid = InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field);
-                    let max_visible_chars = 55;
 
                     match &logical_key {
                         Key::Named(NamedKey::Escape) => {
@@ -1392,57 +1339,16 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_left();
-                                inp.ensure_cursor_visible(max_visible_chars);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_right();
-                                inp.ensure_cursor_visible(max_visible_chars);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Home) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_home();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::End) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_end();
-                                inp.ensure_cursor_visible(max_visible_chars);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.delete_forward();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.delete_back();
-                                inp.ensure_cursor_visible(max_visible_chars);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
                         _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
+                            }
                             if let Some(ref t) = text {
+                                let active_fid = InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field);
                                 if let Some(inp) = self.state.get_text_input_mut(active_fid) {
                                     inp.insert_str(t);
-                                    inp.ensure_cursor_visible(max_visible_chars);
+                                    inp.ensure_cursor_visible(55);
                                     self.request_redraw();
                                     return;
                                 }
@@ -1456,8 +1362,6 @@ impl ApplicationHandler for EvertySshApp {
                     self.state.caret_visible = true;
                     self.state.caret_blink_time = Instant::now();
 
-                    let active_fid = InputFieldId::KeyTool(self.state.key_tool_modal.active_field);
-
                     match &logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.state.key_tool_modal.is_open = false;
@@ -1465,8 +1369,16 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         Key::Named(NamedKey::Tab) => {
-                            self.state.key_tool_modal.active_field =
-                                (self.state.key_tool_modal.active_field + 1) % 3;
+                            if self.modifiers.shift_key() {
+                                if self.state.key_tool_modal.active_field == 0 {
+                                    self.state.key_tool_modal.active_field = 2;
+                                } else {
+                                    self.state.key_tool_modal.active_field -= 1;
+                                }
+                            } else {
+                                self.state.key_tool_modal.active_field =
+                                    (self.state.key_tool_modal.active_field + 1) % 3;
+                            }
                             self.request_redraw();
                             return;
                         }
@@ -1475,54 +1387,13 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_left();
-                                inp.ensure_cursor_visible(40);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_right();
-                                inp.ensure_cursor_visible(40);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Home) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_home();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::End) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.move_end();
-                                inp.ensure_cursor_visible(40);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.delete_forward();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
-                                inp.delete_back();
-                                inp.ensure_cursor_visible(40);
-                                self.request_redraw();
-                                return;
-                            }
-                        }
                         _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
+                            }
                             if let Some(ref t) = text {
+                                let active_fid = InputFieldId::KeyTool(self.state.key_tool_modal.active_field);
                                 if let Some(inp) = self.state.get_text_input_mut(active_fid) {
                                     inp.insert_str(t);
                                     inp.ensure_cursor_visible(40);
@@ -1564,102 +1435,17 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            match self.state.add_host_modal.active_field {
-                                0 => self.state.add_host_modal.name.move_left(),
-                                1 => self.state.add_host_modal.hostname.move_left(),
-                                2 => self.state.add_host_modal.port.move_left(),
-                                3 => self.state.add_host_modal.username.move_left(),
-                                4 => self.state.add_host_modal.group.move_left(),
-                                5 => {
-                                    if self.state.add_host_modal.auth_mode == AuthModeChoice::Key {
-                                        self.state.add_host_modal.key_path.move_left();
-                                    } else if self.state.add_host_modal.auth_mode == AuthModeChoice::Password {
-                                        self.state.add_host_modal.password.move_left();
-                                    }
-                                }
-                                _ => {}
+                        _ => {
+                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                                self.request_redraw();
+                                return;
                             }
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            match self.state.add_host_modal.active_field {
-                                0 => self.state.add_host_modal.name.move_right(),
-                                1 => self.state.add_host_modal.hostname.move_right(),
-                                2 => self.state.add_host_modal.port.move_right(),
-                                3 => self.state.add_host_modal.username.move_right(),
-                                4 => self.state.add_host_modal.group.move_right(),
-                                5 => {
-                                    if self.state.add_host_modal.auth_mode == AuthModeChoice::Key {
-                                        self.state.add_host_modal.key_path.move_right();
-                                    } else if self.state.add_host_modal.auth_mode == AuthModeChoice::Password {
-                                        self.state.add_host_modal.password.move_right();
-                                    }
-                                }
-                                _ => {}
+                            if let Some(ref t) = text {
+                                self.state.handle_key_input(t);
+                                self.request_redraw();
+                                return;
                             }
-                            self.request_redraw();
-                            return;
                         }
-                        Key::Named(NamedKey::Home) => {
-                            match self.state.add_host_modal.active_field {
-                                0 => self.state.add_host_modal.name.move_home(),
-                                1 => self.state.add_host_modal.hostname.move_home(),
-                                2 => self.state.add_host_modal.port.move_home(),
-                                3 => self.state.add_host_modal.username.move_home(),
-                                4 => self.state.add_host_modal.group.move_home(),
-                                5 => {
-                                    if self.state.add_host_modal.auth_mode == AuthModeChoice::Key {
-                                        self.state.add_host_modal.key_path.move_home();
-                                    } else if self.state.add_host_modal.auth_mode == AuthModeChoice::Password {
-                                        self.state.add_host_modal.password.move_home();
-                                    }
-                                }
-                                _ => {}
-                            }
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::End) => {
-                            match self.state.add_host_modal.active_field {
-                                0 => self.state.add_host_modal.name.move_end(),
-                                1 => self.state.add_host_modal.hostname.move_end(),
-                                2 => self.state.add_host_modal.port.move_end(),
-                                3 => self.state.add_host_modal.username.move_end(),
-                                4 => self.state.add_host_modal.group.move_end(),
-                                5 => {
-                                    if self.state.add_host_modal.auth_mode == AuthModeChoice::Key {
-                                        self.state.add_host_modal.key_path.move_end();
-                                    } else if self.state.add_host_modal.auth_mode == AuthModeChoice::Password {
-                                        self.state.add_host_modal.password.move_end();
-                                    }
-                                }
-                                _ => {}
-                            }
-                            self.request_redraw();
-                            return;
-                        }
-                        Key::Named(NamedKey::Delete) => {
-                            match self.state.add_host_modal.active_field {
-                                0 => self.state.add_host_modal.name.delete_forward(),
-                                1 => self.state.add_host_modal.hostname.delete_forward(),
-                                2 => self.state.add_host_modal.port.delete_forward(),
-                                3 => self.state.add_host_modal.username.delete_forward(),
-                                4 => self.state.add_host_modal.group.delete_forward(),
-                                5 => {
-                                    if self.state.add_host_modal.auth_mode == AuthModeChoice::Key {
-                                        self.state.add_host_modal.key_path.delete_forward();
-                                    } else if self.state.add_host_modal.auth_mode == AuthModeChoice::Password {
-                                        self.state.add_host_modal.password.delete_forward();
-                                    }
-                                }
-                                _ => {}
-                            }
-                            self.request_redraw();
-                            return;
-                        }
-                        _ => {}
                     }
                 }
 

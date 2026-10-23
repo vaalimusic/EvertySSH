@@ -160,22 +160,82 @@ impl TextInput {
         }
     }
 
+    fn char_category(c: char) -> u8 {
+        if c.is_whitespace() {
+            0
+        } else if c.is_alphanumeric() || c == '_' {
+            1
+        } else {
+            2
+        }
+    }
+
+    pub fn calc_word_left(&self) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        if chars.is_empty() || self.cursor == 0 {
+            return 0;
+        }
+        let mut pos = self.cursor.min(chars.len());
+        // 1. Skip whitespace backwards
+        while pos > 0 && Self::char_category(chars[pos - 1]) == 0 {
+            pos -= 1;
+        }
+        // 2. Skip word/punct characters backwards of the same category
+        if pos > 0 {
+            let cat = Self::char_category(chars[pos - 1]);
+            while pos > 0 && Self::char_category(chars[pos - 1]) == cat {
+                pos -= 1;
+            }
+        }
+        pos
+    }
+
+    pub fn calc_word_right(&self) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        let len = chars.len();
+        if chars.is_empty() || self.cursor >= len {
+            return len;
+        }
+        let mut pos = self.cursor;
+        // 1. If currently on whitespace, skip it
+        if Self::char_category(chars[pos]) == 0 {
+            while pos < len && Self::char_category(chars[pos]) == 0 {
+                pos += 1;
+            }
+        } else {
+            // Skip current word / punct
+            let cat = Self::char_category(chars[pos]);
+            while pos < len && Self::char_category(chars[pos]) == cat {
+                pos += 1;
+            }
+            // Also skip trailing whitespace
+            while pos < len && Self::char_category(chars[pos]) == 0 {
+                pos += 1;
+            }
+        }
+        pos
+    }
+
     pub fn move_left(&mut self) {
-        self.selection = None;
-        if self.cursor > 0 {
+        if let Some((start, _)) = self.selected_range() {
+            self.cursor = start;
+        } else if self.cursor > 0 {
             self.cursor -= 1;
         }
+        self.selection = None;
         if self.cursor < self.scroll_offset {
             self.scroll_offset = self.cursor;
         }
     }
 
     pub fn move_right(&mut self) {
-        self.selection = None;
         let len = self.text.chars().count();
-        if self.cursor < len {
+        if let Some((_, end)) = self.selected_range() {
+            self.cursor = end.min(len);
+        } else if self.cursor < len {
             self.cursor += 1;
         }
+        self.selection = None;
     }
 
     pub fn move_home(&mut self) {
@@ -187,6 +247,138 @@ impl TextInput {
     pub fn move_end(&mut self) {
         self.selection = None;
         self.cursor = self.text.chars().count();
+    }
+
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.calc_word_left();
+        self.selection = None;
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
+    }
+
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.calc_word_right();
+        self.selection = None;
+    }
+
+    pub fn move_left_select(&mut self) {
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+        if anchor == self.cursor {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, self.cursor));
+        }
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
+    }
+
+    pub fn move_right_select(&mut self) {
+        let len = self.text.chars().count();
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        if self.cursor < len {
+            self.cursor += 1;
+        }
+        if anchor == self.cursor {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, self.cursor));
+        }
+    }
+
+    pub fn move_home_select(&mut self) {
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        if anchor == 0 {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, 0));
+        }
+    }
+
+    pub fn move_end_select(&mut self) {
+        let len = self.text.chars().count();
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        self.cursor = len;
+        if anchor == len {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, len));
+        }
+    }
+
+    pub fn move_word_left_select(&mut self) {
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        self.cursor = self.calc_word_left();
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
+        if anchor == self.cursor {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, self.cursor));
+        }
+    }
+
+    pub fn move_word_right_select(&mut self) {
+        let anchor = match self.selection {
+            Some((a, _)) => a,
+            None => self.cursor,
+        };
+        self.cursor = self.calc_word_right();
+        if anchor == self.cursor {
+            self.selection = None;
+        } else {
+            self.selection = Some((anchor, self.cursor));
+        }
+    }
+
+    pub fn delete_word_back(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let target = self.calc_word_left();
+        if target < self.cursor {
+            let mut chars: Vec<char> = self.text.chars().collect();
+            chars.drain(target..self.cursor);
+            self.text = chars.into_iter().collect();
+            self.cursor = target;
+            if self.cursor < self.scroll_offset {
+                self.scroll_offset = self.cursor;
+            }
+        }
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let target = self.calc_word_right();
+        if target > self.cursor {
+            let mut chars: Vec<char> = self.text.chars().collect();
+            chars.drain(self.cursor..target);
+            self.text = chars.into_iter().collect();
+        }
     }
 
     pub fn scroll_delta(&mut self, delta_chars: i32, max_visible_chars: usize) {
@@ -637,6 +829,7 @@ pub struct SettingsModal {
     pub confirm_delete: bool,
     pub active_general_field: usize,
     pub general_msg: Option<(String, bool)>,
+    pub show_passwords: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -676,6 +869,7 @@ pub enum HoverTarget {
     ModalAuthMode(AuthModeChoice),
     ModalBrowseKey,
     ModalGenerateKey,
+    ModalTogglePassword,
     ModalSave,
     ModalConnect,
     ModalClose,
@@ -728,6 +922,7 @@ pub enum HoverTarget {
     SettingsToggleConfirmDelete,
     SettingsSecurityField(usize),
     SettingsGeneralField(usize),
+    SettingsTogglePassword,
     LockUnlockBtn,
     LockPasswordField,
     // Confirm Run Command Modal
@@ -762,6 +957,7 @@ pub struct AddHostModal {
     pub auth_mode: AuthModeChoice,
     pub key_path: TextInput,
     pub password: TextInput,
+    pub show_password: bool,
     pub badge_color: String,
     pub active_field: usize, // 0=Name, 1=Host, 2=Port, 3=User, 4=Group, 5=Key/Pass
     pub error_msg: Option<String>,
@@ -781,6 +977,7 @@ impl Default for AddHostModal {
             auth_mode: AuthModeChoice::Agent,
             key_path: TextInput::new("~/.ssh/id_ed25519"),
             password: TextInput::default(),
+            show_password: false,
             badge_color: "#2dd4bf".to_string(),
             active_field: 0,
             error_msg: None,
@@ -1138,9 +1335,14 @@ impl AppState {
 
                                 let mut cy = f_y_base;
                                 for f_idx in start_field..end_field {
-                                    if x >= modal_x + 190.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                    let inp_w = modal_w - 220.0 - 42.0;
+                                    if x >= modal_x + 190.0 && x <= modal_x + 190.0 + inp_w && y >= cy && y <= cy + 32.0 {
                                         new_hover = HoverTarget::SettingsSecurityField(f_idx);
                                         cursor = CursorIcon::Text;
+                                        break;
+                                    } else if x >= modal_x + 190.0 + inp_w + 8.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                        new_hover = HoverTarget::SettingsTogglePassword;
+                                        cursor = CursorIcon::Pointer;
                                         break;
                                     }
                                     cy += 44.0;
@@ -1479,7 +1681,15 @@ impl AppState {
                                 cursor = CursorIcon::Pointer;
                             }
                         } else {
-                            if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                            let eye_btn_w = 34.0;
+                            let inp_w = modal_w - 184.0 - eye_btn_w - 8.0;
+                            if x >= modal_x + 160.0 && x <= modal_x + 160.0 + inp_w && y >= f_y && y <= f_y + 32.0 {
+                                new_hover = HoverTarget::ModalField(5);
+                                cursor = CursorIcon::Text;
+                            } else if x >= modal_x + 160.0 + inp_w + 8.0 && x <= modal_x + 160.0 + inp_w + 8.0 + eye_btn_w && y >= f_y && y <= f_y + 32.0 {
+                                new_hover = HoverTarget::ModalTogglePassword;
+                                cursor = CursorIcon::Pointer;
+                            } else if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
                             }
@@ -2215,6 +2425,122 @@ impl AppState {
         false
     }
 
+    pub fn handle_text_navigation_key(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        is_ctrl: bool,
+        is_shift: bool,
+    ) -> bool {
+        let fid = match self.active_field_id() {
+            Some(f) => f,
+            None => return false,
+        };
+
+        let handled = match logical_key {
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowLeft) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_ctrl && is_shift {
+                        inp.move_word_left_select();
+                    } else if is_ctrl {
+                        inp.move_word_left();
+                    } else if is_shift {
+                        inp.move_left_select();
+                    } else {
+                        inp.move_left();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_ctrl && is_shift {
+                        inp.move_word_right_select();
+                    } else if is_ctrl {
+                        inp.move_word_right();
+                    } else if is_shift {
+                        inp.move_right_select();
+                    } else {
+                        inp.move_right();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_shift {
+                        inp.move_home_select();
+                    } else {
+                        inp.move_home();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::End) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_shift {
+                        inp.move_end_select();
+                    } else {
+                        inp.move_end();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Backspace) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_ctrl {
+                        inp.delete_word_back();
+                    } else {
+                        inp.delete_back();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Delete) => {
+                if let Some(inp) = self.get_text_input_mut(fid) {
+                    if is_ctrl {
+                        inp.delete_word_forward();
+                    } else {
+                        inp.delete_forward();
+                    }
+                    inp.ensure_cursor_visible(45);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        if handled {
+            self.caret_visible = true;
+            self.caret_blink_time = std::time::Instant::now();
+            if fid == InputFieldId::SnippetSearch {
+                self.refresh_snippets();
+            } else if fid == InputFieldId::CommandSearch {
+                self.refresh_command_search();
+            } else if fid == InputFieldId::TerminalSearch {
+                self.update_terminal_search();
+            }
+        }
+
+        handled
+    }
+
     pub fn update_caret(&mut self) -> bool {
         let now = std::time::Instant::now();
         if now.duration_since(self.caret_blink_time).as_millis() >= 500 {
@@ -2286,6 +2612,7 @@ impl AppState {
             auth_mode: AuthModeChoice::Agent,
             key_path: TextInput::new("~/.ssh/id_ed25519"),
             password: TextInput::default(),
+            show_password: false,
             badge_color: "#2dd4bf".into(),
             active_field: 0,
             error_msg: None,
@@ -2322,6 +2649,7 @@ impl AppState {
                 auth_mode,
                 key_path: TextInput::new(key_path),
                 password: TextInput::new(password),
+                show_password: false,
                 badge_color: host.badge_color.clone().unwrap_or_else(|| "#2dd4bf".into()),
                 active_field: 0,
                 error_msg: None,
@@ -2494,6 +2822,7 @@ impl AppState {
             confirm_delete,
             active_general_field: 0,
             general_msg: None,
+            show_passwords: false,
         });
         self.focused_input = Some(InputFieldId::SettingsSecurity(init_sec_field));
     }
@@ -3781,5 +4110,70 @@ mod tests {
         // 4. Hover outside modal entirely
         let (_, _) = app.update_hover(10.0, 10.0, w, h);
         assert_eq!(app.hover, HoverTarget::None);
+    }
+
+    #[test]
+    fn test_text_input_word_navigation_and_deletion() {
+        let mut inp = TextInput::new("git commit -m initial");
+        assert_eq!(inp.cursor, 21);
+
+        // Word navigation left
+        inp.move_word_left(); // skips "initial" -> 14
+        assert_eq!(inp.cursor, 14);
+        inp.move_word_left(); // skips "m" -> 12
+        assert_eq!(inp.cursor, 12);
+        inp.move_word_left(); // skips "-" -> 11
+        assert_eq!(inp.cursor, 11);
+        inp.move_word_left(); // skips "commit " -> 4
+        assert_eq!(inp.cursor, 4);
+
+        // Word navigation right
+        inp.move_word_right(); // skips "commit " -> 11
+        assert_eq!(inp.cursor, 11);
+
+        // Shift selection
+        inp.move_left_select();
+        assert_eq!(inp.selected_range(), Some((10, 11)));
+
+        // Word deletion back
+        inp.set("git commit -m initial");
+        assert_eq!(inp.cursor, 21);
+        inp.delete_word_back(); // deletes "initial"
+        assert_eq!(inp.text, "git commit -m ");
+        assert_eq!(inp.cursor, 14);
+
+        // Word deletion forward
+        inp.cursor = 4; // at "commit -m "
+        inp.delete_word_forward(); // deletes "commit "
+        assert_eq!(inp.text, "git -m ");
+    }
+
+    #[test]
+    fn test_handle_text_navigation_key() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone());
+        app.add_host_modal.is_open = true;
+        app.add_host_modal.name.set("prod-server-01");
+
+        // Navigate left with Ctrl
+        let left_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowLeft);
+        let handled = app.handle_text_navigation_key(&left_key, true, false);
+        assert!(handled);
+        assert_eq!(app.add_host_modal.name.cursor, 12); // jumps before "01"
+
+        // Select with Shift+Left
+        let handled_sel = app.handle_text_navigation_key(&left_key, false, true);
+        assert!(handled_sel);
+        assert_eq!(app.add_host_modal.name.selected_range(), Some((11, 12)));
+
+        // Jump to Home
+        let home_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home);
+        app.handle_text_navigation_key(&home_key, false, false);
+        assert_eq!(app.add_host_modal.name.cursor, 0);
+
+        // Jump to End
+        let end_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::End);
+        app.handle_text_navigation_key(&end_key, false, false);
+        assert_eq!(app.add_host_modal.name.cursor, 14);
     }
 }
