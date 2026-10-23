@@ -274,6 +274,14 @@ impl EvertySshApp {
                 self.state.add_host_modal.active_field = idx;
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let modal_w = 540.0f64.min(w - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let input_start_x = modal_x + 34.0;
+                let click_offset_px = (logical_x - input_start_x).max(0.0);
+                let fid = InputFieldId::AddHost(idx);
+                if let Some(inp) = self.state.get_text_input_mut(fid) {
+                    inp.set_cursor_from_click(click_offset_px, 7.8);
+                }
                 self.request_redraw();
             }
             HoverTarget::ModalAuthMode(mode) => {
@@ -572,6 +580,14 @@ impl EvertySshApp {
                 self.state.add_snippet_modal.active_field = idx;
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
+                let modal_w = 520.0f64.min(w - 40.0);
+                let modal_x = (w - modal_w) / 2.0;
+                let input_start_x = modal_x + 34.0;
+                let click_offset_px = (logical_x - input_start_x).max(0.0);
+                let fid = InputFieldId::AddSnippet(idx);
+                if let Some(inp) = self.state.get_text_input_mut(fid) {
+                    inp.set_cursor_from_click(click_offset_px, 7.8);
+                }
                 self.request_redraw();
             }
             HoverTarget::ModalSnippetSave => {
@@ -885,9 +901,55 @@ impl ApplicationHandler for EvertySshApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y as i32,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / 20.0) as i32,
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        if y.abs() > 0.1 {
+                            y as i32
+                        } else {
+                            -x as i32
+                        }
+                    }
+                    MouseScrollDelta::PixelDelta(p) => {
+                        if p.y.abs() > 1.0 {
+                            (p.y / 20.0) as i32
+                        } else {
+                            (-p.x / 20.0) as i32
+                        }
+                    }
                 };
+
+                // Check if hovering over or focused on an input field
+                let target_input = match self.state.hover {
+                    HoverTarget::ModalSnippetField(idx) => Some(InputFieldId::AddSnippet(idx)),
+                    HoverTarget::ModalField(idx) => Some(InputFieldId::AddHost(idx)),
+                    HoverTarget::KeyToolField(idx) => Some(InputFieldId::KeyTool(idx)),
+                    HoverTarget::SidebarSearchHost => Some(InputFieldId::HostSearch),
+                    HoverTarget::SidebarSearchSnippet => Some(InputFieldId::SnippetSearch),
+                    HoverTarget::SidebarSearchCommand => Some(InputFieldId::CommandSearch),
+                    HoverTarget::SettingsSecurityField(idx) => Some(InputFieldId::SettingsSecurity(idx)),
+                    HoverTarget::SettingsGeneralField(idx) => Some(InputFieldId::SettingsGeneral(idx)),
+                    _ => {
+                        if self.state.add_snippet_modal.is_open {
+                            Some(InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field))
+                        } else if self.state.add_host_modal.is_open {
+                            Some(InputFieldId::AddHost(self.state.add_host_modal.active_field))
+                        } else {
+                            None
+                        }
+                    }
+                };
+
+                if let Some(fid) = target_input {
+                    if let Some(inp) = self.state.get_text_input_mut(fid) {
+                        if inp.text.chars().count() > 1 {
+                            inp.scroll_delta(lines * 4, 50);
+                            self.state.caret_visible = true;
+                            self.state.caret_blink_time = Instant::now();
+                            self.request_redraw();
+                            return;
+                        }
+                    }
+                }
+
                 if let Some(tab) = self.state.tabs.get_mut(self.state.active_tab) {
                     if lines > 0 {
                         tab.terminal.scroll_up(lines.abs() as usize * 3);
@@ -1275,6 +1337,9 @@ impl ApplicationHandler for EvertySshApp {
                     self.state.caret_visible = true;
                     self.state.caret_blink_time = Instant::now();
 
+                    let active_fid = InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field);
+                    let max_visible_chars = 55;
+
                     match &logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.state.add_snippet_modal.is_open = false;
@@ -1300,16 +1365,60 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.handle_key_input("\x08");
-                            self.request_redraw();
-                            return;
-                        }
-                        _ => {
-                            if let Some(t) = text {
-                                self.state.handle_key_input(&t);
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_left();
+                                inp.ensure_cursor_visible(max_visible_chars);
                                 self.request_redraw();
                                 return;
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_right();
+                                inp.ensure_cursor_visible(max_visible_chars);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_home();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_end();
+                                inp.ensure_cursor_visible(max_visible_chars);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.delete_forward();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.delete_back();
+                                inp.ensure_cursor_visible(max_visible_chars);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        _ => {
+                            if let Some(ref t) = text {
+                                if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                    inp.insert_str(t);
+                                    inp.ensure_cursor_visible(max_visible_chars);
+                                    self.request_redraw();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -1319,6 +1428,8 @@ impl ApplicationHandler for EvertySshApp {
                 if self.state.key_tool_modal.is_open {
                     self.state.caret_visible = true;
                     self.state.caret_blink_time = Instant::now();
+
+                    let active_fid = InputFieldId::KeyTool(self.state.key_tool_modal.active_field);
 
                     match &logical_key {
                         Key::Named(NamedKey::Escape) => {
@@ -1337,16 +1448,60 @@ impl ApplicationHandler for EvertySshApp {
                             self.request_redraw();
                             return;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.handle_key_input("\x08");
-                            self.request_redraw();
-                            return;
-                        }
-                        _ => {
-                            if let Some(t) = text {
-                                self.state.handle_key_input(&t);
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_left();
+                                inp.ensure_cursor_visible(40);
                                 self.request_redraw();
                                 return;
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_right();
+                                inp.ensure_cursor_visible(40);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_home();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.move_end();
+                                inp.ensure_cursor_visible(40);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.delete_forward();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                inp.delete_back();
+                                inp.ensure_cursor_visible(40);
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        _ => {
+                            if let Some(ref t) = text {
+                                if let Some(inp) = self.state.get_text_input_mut(active_fid) {
+                                    inp.insert_str(t);
+                                    inp.ensure_cursor_visible(40);
+                                    self.request_redraw();
+                                    return;
+                                }
                             }
                         }
                     }

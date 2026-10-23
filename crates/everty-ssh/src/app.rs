@@ -136,6 +136,9 @@ impl TextInput {
         if self.cursor > 0 {
             self.cursor -= 1;
         }
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        }
     }
 
     pub fn move_right(&mut self) {
@@ -149,11 +152,37 @@ impl TextInput {
     pub fn move_home(&mut self) {
         self.selection = None;
         self.cursor = 0;
+        self.scroll_offset = 0;
     }
 
     pub fn move_end(&mut self) {
         self.selection = None;
         self.cursor = self.text.chars().count();
+    }
+
+    pub fn scroll_delta(&mut self, delta_chars: i32, max_visible_chars: usize) {
+        let total = self.text.chars().count();
+        if delta_chars > 0 {
+            // Scroll towards beginning (left)
+            self.scroll_offset = self.scroll_offset.saturating_sub(delta_chars as usize);
+        } else if delta_chars < 0 {
+            // Scroll towards end (right)
+            let max_scroll = total.saturating_sub(max_visible_chars.min(total));
+            self.scroll_offset = (self.scroll_offset + delta_chars.unsigned_abs() as usize).min(max_scroll);
+        }
+        // Keep cursor in view when scrolling so user can immediately edit where they scrolled
+        if self.cursor < self.scroll_offset {
+            self.cursor = self.scroll_offset;
+        } else if self.cursor > self.scroll_offset + max_visible_chars {
+            self.cursor = self.scroll_offset + max_visible_chars;
+        }
+    }
+
+    pub fn set_cursor_from_click(&mut self, click_offset_px: f64, approx_char_w: f64) {
+        let total_chars = self.text.chars().count();
+        let clicked_char = (click_offset_px / approx_char_w).round().max(0.0) as usize;
+        self.cursor = (self.scroll_offset + clicked_char).min(total_chars);
+        self.clear_selection();
     }
 
     pub fn prefix_to_cursor(&self) -> String {
@@ -1919,6 +1948,7 @@ impl AppState {
                         if let Some(inp) = self.get_text_input_mut(fid) {
                             inp.delete_selection();
                             inp.insert_str(&text);
+                            inp.ensure_cursor_visible(50);
                         }
                         if fid == InputFieldId::CommandSearch {
                             self.refresh_command_search();
@@ -3455,5 +3485,31 @@ mod tests {
 
         let pos1 = app.pos_from_coords(254.0, 50.0 + 18.0);
         assert_eq!(pos1, Some(TerminalPos { col: 0, row: 1 }));
+    }
+
+    #[test]
+    fn test_text_input_horizontal_scrolling() {
+        let mut inp = TextInput::new("docker run -d --name nginx-server -p 80:80 -v /var/www:/usr/share/nginx/html:ro nginx:latest");
+        assert_eq!(inp.cursor, inp.text.chars().count());
+        assert_eq!(inp.scroll_offset, 0);
+
+        // Home key jumps to start and resets scroll
+        inp.move_home();
+        assert_eq!(inp.cursor, 0);
+        assert_eq!(inp.scroll_offset, 0);
+
+        // Scroll delta towards end (lines < 0)
+        inp.scroll_delta(-10, 40);
+        assert_eq!(inp.scroll_offset, 10);
+        assert_eq!(inp.cursor, 10);
+
+        // Scroll delta towards start (lines > 0)
+        inp.scroll_delta(6, 40);
+        assert_eq!(inp.scroll_offset, 4);
+        assert_eq!(inp.cursor, 10); // cursor remains within visible range [4, 44]
+
+        // Clicking at 100px from left
+        inp.set_cursor_from_click(100.0, 10.0);
+        assert_eq!(inp.cursor, 4 + 10); // scroll_offset (4) + 10 chars
     }
 }

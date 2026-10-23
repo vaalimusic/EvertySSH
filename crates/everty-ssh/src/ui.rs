@@ -224,6 +224,32 @@ impl UiRenderer {
                 }
             }
         }
+
+        // Draw subtle bottom scroll track & thumb and edge indicators when text overflows
+        if total_chars > max_visible_chars {
+            let track_x = rect.origin.x.0 + 8.0;
+            let track_y = rect.origin.y.0 + rect.size.height.0 - 2.5;
+            let track_w = (rect.size.width.0 - 16.0).max(10.0);
+            builder.fill_rect(LogicalRect::from_xywh(track_x, track_y, track_w, 2.0), Color::rgba(255, 255, 255, 30), 1.0);
+
+            let visible_ratio = (max_visible_chars as f64 / total_chars as f64).clamp(0.08, 1.0);
+            let thumb_w = (track_w * visible_ratio).max(18.0);
+            let max_scroll = total_chars.saturating_sub(max_visible_chars);
+            let scroll_ratio = if max_scroll > 0 { (offset as f64 / max_scroll as f64).clamp(0.0, 1.0) } else { 0.0 };
+            let thumb_x = track_x + (track_w - thumb_w) * scroll_ratio;
+            builder.fill_rect(LogicalRect::from_xywh(thumb_x, track_y, thumb_w, 2.0), accent_mint, 1.0);
+
+            // Left hint: small indicator if scrolled forward
+            if offset > 0 {
+                let left_arrow = self.shape_cached("‹", StyleId::Small, None);
+                builder.text(LogicalPoint::new(rect.origin.x.0 + 2.0, rect.origin.y.0 + 7.0), left_arrow, accent_mint);
+            }
+            // Right hint: small indicator if more text to the right
+            if offset + take_count < total_chars {
+                let right_arrow = self.shape_cached("›", StyleId::Small, None);
+                builder.text(LogicalPoint::new(rect.origin.x.0 + rect.size.width.0 - 9.0, rect.origin.y.0 + 7.0), right_arrow, accent_mint);
+            }
+        }
     }
 
     fn render_single_terminal(
