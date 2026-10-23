@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "everty-ssh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "async-trait",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "everty-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cosmic-text",
  "resvg",

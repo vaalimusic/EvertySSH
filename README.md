@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Release-v0.2.0-2dd4bf?style=for-the-badge" alt="Release v0.2.0" />
   <img src="https://img.shields.io/badge/Language-Rust%202021-DEA584?style=for-the-badge&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/UI_Engine-EvertyUI-2dd4bf?style=for-the-badge" alt="EvertyUI" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0284c7?style=for-the-badge" alt="Platforms" />
@@ -103,6 +104,7 @@ EvertyUI уже применяется в интерфейсных компон�
 
 ### 🔒 Безопасность и настройки
 * **Защита мастер-паролем:** блокировка запуска приложения с хэшированием пароля через SHA-256.
+* **Двуязычный интерфейс (RU / EN):** мгновенное переключение языка в 1 клик прямо из шапки приложения или через вкладку настроек.
 * **Резервное копирование:** экспорт и импорт всех настроек и серверов в зашифрованный JSON-файл.
 * **Автоматический Crash Reporter:** при возникновении непредвиденной ошибки приложение выводит нативный диалог с подробностями и сохраняет трассировку в `crash.log`.
 
