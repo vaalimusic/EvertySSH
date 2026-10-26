@@ -46,12 +46,15 @@ struct EvertySshApp {
 
 impl EvertySshApp {
     fn new(tokio_handle: tokio::runtime::Handle) -> Result<Self, String> {
+        let ui = UiRenderer::new();
+        let mut state = AppState::new(tokio_handle)?;
+        state.terminal_char_width = ui.mono_char_w;
         Ok(Self {
             window: None,
             context: None,
             surface: None,
-            state: AppState::new(tokio_handle)?,
-            ui: UiRenderer::new(),
+            state,
+            ui,
             modifiers: ModifiersState::default(),
             cursor_pos: (0.0, 0.0),
             last_click_time: Instant::now(),

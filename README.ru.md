@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v0.2.4-2dd4bf?style=for-the-badge" alt="Release v0.2.4" />
+  <img src="https://img.shields.io/badge/Release-v0.2.5-2dd4bf?style=for-the-badge" alt="Release v0.2.5" />
   <img src="https://img.shields.io/badge/Language-Rust%202021-DEA584?style=for-the-badge&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/UI_Engine-EvertyUI-2dd4bf?style=for-the-badge" alt="EvertyUI" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0284c7?style=for-the-badge" alt="Platforms" />

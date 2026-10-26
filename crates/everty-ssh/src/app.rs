@@ -1220,6 +1220,7 @@ pub struct AppState {
     pub header_height: f64,
     pub footer_height: f64,
     pub terminal_cols: usize,
+    pub terminal_char_width: f64,
     pub terminal_rows: usize,
 
     // Modals
@@ -1326,6 +1327,7 @@ impl AppState {
             header_height: 44.0,
             footer_height: 28.0,
             terminal_cols: 100,
+            terminal_char_width: TERMINAL_CHAR_WIDTH,
             terminal_rows: 30,
             key_tool_modal: KeyToolModal::default(),
             add_snippet_modal: AddSnippetModal::default(),
@@ -1380,7 +1382,7 @@ impl AppState {
             term_w
         };
 
-        let cols = ((eff_term_w - 24.0) / TERMINAL_CHAR_WIDTH)
+        let cols = ((eff_term_w - 24.0) / self.terminal_char_width)
             .floor()
             .max(20.0) as usize;
         // Available vertical height inside terminal viewport:
@@ -2658,7 +2660,7 @@ impl AppState {
 
         let pad_x = self.sidebar_width + 10.0;
         let pad_y = self.header_height + bar_h + 6.0;
-        let char_w = TERMINAL_CHAR_WIDTH;
+        let char_w = self.terminal_char_width;
         let line_h = TERMINAL_LINE_HEIGHT;
 
         if !self.is_mouse_selecting && (x < pad_x || y < pad_y) {
@@ -4302,15 +4304,27 @@ mod tests {
 
     #[test]
     fn test_mono_metrics() {
-        let mut sys = everty_ui::TextSystem::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
+        let mut ui = crate::ui::UiRenderer::new();
+        app.terminal_char_width = ui.mono_char_w;
         let mono_style = everty_ui::TextStyle {
             family: everty_ui::FontFamily::Monospace,
             weight: everty_ui::FontWeight::Regular,
             font_size: everty_ui::LogicalPx(13.0),
             line_height: everty_ui::LogicalPx(18.0),
         };
-        let l1 = sys.shape("a", &mono_style, None);
-        assert!((l1.metrics.size.width.0 - TERMINAL_CHAR_WIDTH).abs() < 0.001);
+        let l1 = ui.text_system.shape("a", &mono_style, None);
+        assert!(app.terminal_char_width.is_finite() && app.terminal_char_width > 0.0);
+        assert!((l1.metrics.size.width.0 - app.terminal_char_width).abs() < 0.001);
+        app.resize_terminals(1120.0, 720.0);
+        let expected_cols = ((1120.0 - app.sidebar_width - 24.0) / ui.mono_char_w).floor() as usize;
+        assert_eq!(app.terminal_cols, expected_cols);
+        let x = app.sidebar_width + 10.0 + 3.5 * ui.mono_char_w;
+        assert_eq!(
+            app.pos_from_coords(x, app.header_height + 7.0),
+            Some(TerminalPos { col: 3, row: 0 })
+        );
     }
 
     #[test]
