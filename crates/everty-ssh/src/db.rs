@@ -1,7 +1,7 @@
-use std::path::Path;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -103,7 +103,9 @@ impl HistoryDb {
         )?;
 
         // Populate default snippets if table is empty
-        let count: i64 = self.conn.query_row("SELECT count(*) FROM snippets", [], |r| r.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM snippets", [], |r| r.get(0))?;
         if count == 0 {
             self.seed_default_snippets()?;
         }
@@ -113,12 +115,42 @@ impl HistoryDb {
 
     fn seed_default_snippets(&self) -> SqlResult<()> {
         let defaults = [
-            ("System Overview", "uname -a && uptime && free -h && df -h", "System", "Display OS, uptime, RAM, and disk usage"),
-            ("Active Network Ports", "ss -tulpn || netstat -tulpn", "Network", "List all listening TCP/UDP ports and processes"),
-            ("Docker Containers", "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'", "Docker", "Compact list of running containers"),
-            ("Follow Systemd Logs", "journalctl -u nginx -f --no-tail", "Logs", "Follow logs of a systemd service"),
-            ("Top Memory Processes", "ps aux --sort=-%mem | head -n 15", "System", "List top 15 processes by memory consumption"),
-            ("Top CPU Processes", "ps aux --sort=-%cpu | head -n 15", "System", "List top 15 processes by CPU consumption"),
+            (
+                "System Overview",
+                "uname -a && uptime && free -h && df -h",
+                "System",
+                "Display OS, uptime, RAM, and disk usage",
+            ),
+            (
+                "Active Network Ports",
+                "ss -tulpn || netstat -tulpn",
+                "Network",
+                "List all listening TCP/UDP ports and processes",
+            ),
+            (
+                "Docker Containers",
+                "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'",
+                "Docker",
+                "Compact list of running containers",
+            ),
+            (
+                "Follow Systemd Logs",
+                "journalctl -u nginx -f --no-tail",
+                "Logs",
+                "Follow logs of a systemd service",
+            ),
+            (
+                "Top Memory Processes",
+                "ps aux --sort=-%mem | head -n 15",
+                "System",
+                "List top 15 processes by memory consumption",
+            ),
+            (
+                "Top CPU Processes",
+                "ps aux --sort=-%cpu | head -n 15",
+                "System",
+                "List top 15 processes by CPU consumption",
+            ),
         ];
 
         for (title, cmd, cat, desc) in defaults {
@@ -212,10 +244,8 @@ impl HistoryDb {
             "DELETE FROM command_history WHERE session_id = ?1",
             params![session_id],
         )?;
-        self.conn.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            params![session_id],
-        )?;
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
         Ok(())
     }
 
@@ -443,7 +473,8 @@ impl HistoryDb {
     }
 
     pub fn delete_snippet(&self, id: i64) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -480,11 +511,16 @@ mod tests {
 
         // Record session
         let s_id = "test-session-1";
-        db.record_session_start(s_id, Some("host-1"), "192.168.1.10", "root").unwrap();
+        db.record_session_start(s_id, Some("host-1"), "192.168.1.10", "root")
+            .unwrap();
 
         // Record commands
-        let c1 = db.record_command(Some(s_id), "192.168.1.10", "ls -la /var/log").unwrap();
-        let _c2 = db.record_command(Some(s_id), "192.168.1.10", "docker compose up -d").unwrap();
+        let c1 = db
+            .record_command(Some(s_id), "192.168.1.10", "ls -la /var/log")
+            .unwrap();
+        let _c2 = db
+            .record_command(Some(s_id), "192.168.1.10", "docker compose up -d")
+            .unwrap();
 
         // Toggle favorite
         assert!(db.toggle_favorite_command(c1).unwrap());
@@ -509,8 +545,17 @@ mod tests {
         assert!(sessions[0].ended_at.is_some());
 
         // Test snippet update
-        let snip_id = db.add_snippet("Old Title", "old cmd", Some("Cat"), None).unwrap();
-        db.update_snippet(snip_id, "New Title", "new cmd", Some("NewCat"), Some("NewDesc")).unwrap();
+        let snip_id = db
+            .add_snippet("Old Title", "old cmd", Some("Cat"), None)
+            .unwrap();
+        db.update_snippet(
+            snip_id,
+            "New Title",
+            "new cmd",
+            Some("NewCat"),
+            Some("NewDesc"),
+        )
+        .unwrap();
         let updated = db.search_snippets("New Title").unwrap();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].command, "new cmd");

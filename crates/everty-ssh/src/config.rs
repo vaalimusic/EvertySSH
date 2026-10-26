@@ -1,13 +1,14 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<String>,
     pub name: String,
     pub hostname: String,
     #[serde(default = "default_port")]
@@ -89,6 +90,9 @@ pub struct GlobalSettings {
     pub master_password_hash: Option<String>,
     #[serde(default = "default_confirm_delete")]
     pub confirm_delete: bool,
+    /// Only shell integration events are recorded; raw terminal input is never logged.
+    #[serde(default)]
+    pub record_command_history: bool,
     #[serde(default = "default_user")]
     pub default_user: String,
     #[serde(default)]
@@ -103,6 +107,7 @@ impl Default for GlobalSettings {
             scrollback_lines: default_scrollback(),
             master_password_hash: None,
             confirm_delete: true,
+            record_command_history: false,
             default_user: "root".to_string(),
             language: AppLanguage::Ru,
         }
@@ -129,15 +134,35 @@ fn default_user() -> String {
     "root".to_string()
 }
 
-pub fn hash_password(password: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"evertyssh_salt_v1_");
-    hasher.update(password.as_bytes());
-    format!("{:x}", hasher.finalize())
+pub fn hash_password(password: &str) -> Result<String, String> {
+    use argon2::{
+        password_hash::{PasswordHasher, SaltString},
+        Argon2,
+    };
+    let salt = SaltString::generate(&mut rand_core::OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|e| e.to_string())
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    hash_password(password) == hash
+    use argon2::{
+        password_hash::{PasswordHash, PasswordVerifier},
+        Argon2,
+    };
+    if hash.starts_with("$argon2id$") {
+        return PasswordHash::new(hash).is_ok_and(|parsed| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        });
+    }
+    // Legacy hashes are accepted only for migration on successful unlock.
+    let mut hasher = Sha256::new();
+    hasher.update(b"evertyssh_salt_v1_");
+    hasher.update(password.as_bytes());
+    format!("{:x}", hasher.finalize()) == hash
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,41 +184,12 @@ pub fn hosts_file_path() -> PathBuf {
     config_dir().join("hosts.toml")
 }
 
-pub fn load_hosts() -> Result<HostsDocument, String> {
-    let path = hosts_file_path();
-    if !path.exists() {
-        let sample = sample_hosts_document();
-        let _ = save_hosts(&sample);
-        return Ok(sample);
-    }
-
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-
-    toml::from_str::<HostsDocument>(&content)
-        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))
-}
-
-pub fn save_hosts(doc: &HostsDocument) -> Result<(), String> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create config dir {}: {e}", dir.display()))?;
-
-    let path = hosts_file_path();
-    let toml_str = toml::to_string_pretty(doc)
-        .map_err(|e| format!("Failed to serialize TOML: {e}"))?;
-
-    fs::write(&path, toml_str)
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-
-    Ok(())
-}
-
 pub fn sample_hosts_document() -> HostsDocument {
     HostsDocument {
         settings: GlobalSettings::default(),
         hosts: vec![
             HostConfig {
+                secret_ref: None,
                 id: "local-dev".into(),
                 name: "Local Development Server".into(),
                 hostname: "127.0.0.1".into(),
@@ -207,6 +203,7 @@ pub fn sample_hosts_document() -> HostsDocument {
                 env: HashMap::new(),
             },
             HostConfig {
+                secret_ref: None,
                 id: "prod-web".into(),
                 name: "Production Web 01".into(),
                 hostname: "web01.example.com".into(),

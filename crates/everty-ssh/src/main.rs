@@ -1,10 +1,10 @@
 #![windows_subsystem = "windows"]
 
+use everty_ui::{DpiScale, PhysicalSize};
+use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use everty_ui::{DpiScale, PhysicalSize};
-use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize as WinitPhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -13,16 +13,20 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 pub mod app;
+pub mod backup;
 pub mod config;
+pub mod config_store;
 pub mod db;
 pub mod i18n;
+pub mod paste;
+pub mod secrets;
 pub mod ssh;
 pub mod terminal;
 pub mod ui;
 
 use app::{
-    open_browser_url, open_google_search, AppState, AuthModeChoice, ContextMenuItem, HoverTarget, InputFieldId,
-    KeyAlgo, SettingsTab, TerminalSelection,
+    open_browser_url, open_google_search, AppState, AuthModeChoice, ContextMenuItem, HoverTarget,
+    InputFieldId, KeyAlgo, SettingsTab, TerminalSelection,
 };
 use ui::UiRenderer;
 
@@ -41,12 +45,12 @@ struct EvertySshApp {
 }
 
 impl EvertySshApp {
-    fn new(tokio_handle: tokio::runtime::Handle) -> Self {
-        Self {
+    fn new(tokio_handle: tokio::runtime::Handle) -> Result<Self, String> {
+        Ok(Self {
             window: None,
             context: None,
             surface: None,
-            state: AppState::new(tokio_handle),
+            state: AppState::new(tokio_handle)?,
             ui: UiRenderer::new(),
             modifiers: ModifiersState::default(),
             cursor_pos: (0.0, 0.0),
@@ -54,7 +58,7 @@ impl EvertySshApp {
             click_count: 0,
             last_render_size: (0, 0),
             current_cursor: CursorIcon::Default,
-        }
+        })
     }
 
     fn request_redraw(&self) {
@@ -114,15 +118,25 @@ impl EvertySshApp {
                 let mut i = 0;
                 let mut j = 0;
                 while i + 16 <= src_slice.len() {
-                    dst_slice[j] = ((src_slice[i] as u32) << 16) | ((src_slice[i + 1] as u32) << 8) | (src_slice[i + 2] as u32);
-                    dst_slice[j + 1] = ((src_slice[i + 4] as u32) << 16) | ((src_slice[i + 5] as u32) << 8) | (src_slice[i + 6] as u32);
-                    dst_slice[j + 2] = ((src_slice[i + 8] as u32) << 16) | ((src_slice[i + 9] as u32) << 8) | (src_slice[i + 10] as u32);
-                    dst_slice[j + 3] = ((src_slice[i + 12] as u32) << 16) | ((src_slice[i + 13] as u32) << 8) | (src_slice[i + 14] as u32);
+                    dst_slice[j] = ((src_slice[i] as u32) << 16)
+                        | ((src_slice[i + 1] as u32) << 8)
+                        | (src_slice[i + 2] as u32);
+                    dst_slice[j + 1] = ((src_slice[i + 4] as u32) << 16)
+                        | ((src_slice[i + 5] as u32) << 8)
+                        | (src_slice[i + 6] as u32);
+                    dst_slice[j + 2] = ((src_slice[i + 8] as u32) << 16)
+                        | ((src_slice[i + 9] as u32) << 8)
+                        | (src_slice[i + 10] as u32);
+                    dst_slice[j + 3] = ((src_slice[i + 12] as u32) << 16)
+                        | ((src_slice[i + 13] as u32) << 8)
+                        | (src_slice[i + 14] as u32);
                     i += 16;
                     j += 4;
                 }
                 while i + 4 <= src_slice.len() {
-                    dst_slice[j] = ((src_slice[i] as u32) << 16) | ((src_slice[i + 1] as u32) << 8) | (src_slice[i + 2] as u32);
+                    dst_slice[j] = ((src_slice[i] as u32) << 16)
+                        | ((src_slice[i + 1] as u32) << 8)
+                        | (src_slice[i + 2] as u32);
                     i += 4;
                     j += 1;
                 }
@@ -132,10 +146,18 @@ impl EvertySshApp {
     }
 
     fn handle_mouse_click(&mut self, x: f64, y: f64) {
-        let scale_factor = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0);
+        let scale_factor = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor())
+            .unwrap_or(1.0);
         let logical_x = x / scale_factor;
         let logical_y = y / scale_factor;
-        let win_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(WinitPhysicalSize::new(1120, 720));
+        let win_size = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or(WinitPhysicalSize::new(1120, 720));
         let w = (win_size.width as f64) / scale_factor;
         let h = (win_size.height as f64) / scale_factor;
 
@@ -151,7 +173,13 @@ impl EvertySshApp {
         // Ensure hover state is updated right at click coordinates
         self.state.update_hover(logical_x, logical_y, w, h);
 
-        if !matches!(self.state.hover, HoverTarget::SidebarSearchHost | HoverTarget::SidebarSearchSnippet | HoverTarget::SidebarSearchCommand | HoverTarget::InputContextMenu(_)) {
+        if !matches!(
+            self.state.hover,
+            HoverTarget::SidebarSearchHost
+                | HoverTarget::SidebarSearchSnippet
+                | HoverTarget::SidebarSearchCommand
+                | HoverTarget::InputContextMenu(_)
+        ) {
             self.state.focused_input = None;
         }
 
@@ -198,7 +226,8 @@ impl EvertySshApp {
                         let sb_y = header_h + 6.0;
                         let sb_h = (h - header_h - self.state.footer_height - 12.0).max(20.0);
                         let rel_ratio = ((logical_y - sb_y) / sb_h).clamp(0.0, 1.0);
-                        let target_offset = ((1.0 - rel_ratio) * (scrollback_len as f64)).round() as usize;
+                        let target_offset =
+                            ((1.0 - rel_ratio) * (scrollback_len as f64)).round() as usize;
                         tab.terminal.set_scroll_offset(target_offset);
                         self.request_redraw();
                     }
@@ -243,7 +272,8 @@ impl EvertySshApp {
                 let modal_x = (w - modal_w) / 2.0;
                 let input_start_x = modal_x + 170.0;
                 let fid = InputFieldId::KeyTool(idx);
-                self.state.handle_input_click(fid, logical_x, input_start_x, click_count);
+                self.state
+                    .handle_input_click(fid, logical_x, input_start_x, click_count);
                 self.request_redraw();
             }
             HoverTarget::KeyToolGenerateBtn => {
@@ -255,7 +285,8 @@ impl EvertySshApp {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(pub_key.clone());
                     }
-                    self.state.key_tool_modal.status_msg = Some("✓ Публичный ключ скопирован в буфер!".into());
+                    self.state.key_tool_modal.status_msg =
+                        Some("✓ Публичный ключ скопирован в буфер!".into());
                 }
                 self.request_redraw();
             }
@@ -269,7 +300,8 @@ impl EvertySshApp {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(cmd);
                     }
-                    self.state.key_tool_modal.status_msg = Some("✓ Команда скопирована в буфер!".into());
+                    self.state.key_tool_modal.status_msg =
+                        Some("✓ Команда скопирована в буфер!".into());
                 }
                 self.request_redraw();
             }
@@ -300,7 +332,8 @@ impl EvertySshApp {
                 let modal_x = (w - modal_w) / 2.0;
                 let input_start_x = modal_x + 170.0;
                 let fid = InputFieldId::AddHost(idx);
-                self.state.handle_input_click(fid, logical_x, input_start_x, click_count);
+                self.state
+                    .handle_input_click(fid, logical_x, input_start_x, click_count);
                 self.request_redraw();
             }
             HoverTarget::ModalAuthMode(mode) => {
@@ -320,7 +353,8 @@ impl EvertySshApp {
                 if let Some(cmd) = self.state.command_search_results.get(idx) {
                     let cmd_text = cmd.command.clone();
                     self.state.palette_open = false;
-                    self.state.open_confirm_run_modal(cmd_text, "Палитра команд (Ctrl+R)".into());
+                    self.state
+                        .open_confirm_run_modal(cmd_text, "Палитра команд (Ctrl+R)".into());
                 }
                 self.request_redraw();
             }
@@ -333,7 +367,9 @@ impl EvertySshApp {
                 self.state.close_active_tab();
                 self.request_redraw();
             }
-            HoverTarget::HeaderAddBtn | HoverTarget::SidebarAddHostBtn | HoverTarget::WelcomeAdd => {
+            HoverTarget::HeaderAddBtn
+            | HoverTarget::SidebarAddHostBtn
+            | HoverTarget::WelcomeAdd => {
                 self.state.open_add_host_dialog();
                 self.request_redraw();
             }
@@ -354,21 +390,36 @@ impl EvertySshApp {
                 self.state.focused_input = Some(InputFieldId::HostSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
-                self.state.handle_input_click(InputFieldId::HostSearch, logical_x, 22.0, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::HostSearch,
+                    logical_x,
+                    22.0,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::SidebarSearchSnippet => {
                 self.state.focused_input = Some(InputFieldId::SnippetSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
-                self.state.handle_input_click(InputFieldId::SnippetSearch, logical_x, 22.0, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::SnippetSearch,
+                    logical_x,
+                    22.0,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::SidebarSearchCommand => {
                 self.state.focused_input = Some(InputFieldId::CommandSearch);
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
-                self.state.handle_input_click(InputFieldId::CommandSearch, logical_x, 22.0, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::CommandSearch,
+                    logical_x,
+                    22.0,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::HostConnect(idx) => {
@@ -431,13 +482,16 @@ impl EvertySshApp {
                     m.active_tab = tab;
                     match tab {
                         SettingsTab::Security => {
-                            let has_existing = self.state.hosts_doc.settings.master_password_hash.is_some();
+                            let has_existing =
+                                self.state.hosts_doc.settings.master_password_hash.is_some();
                             let init_sec = if has_existing { 0 } else { 1 };
                             m.active_security_field = init_sec;
-                            self.state.focused_input = Some(InputFieldId::SettingsSecurity(init_sec));
+                            self.state.focused_input =
+                                Some(InputFieldId::SettingsSecurity(init_sec));
                         }
                         SettingsTab::General => {
-                            self.state.focused_input = Some(InputFieldId::SettingsGeneral(m.active_general_field));
+                            self.state.focused_input =
+                                Some(InputFieldId::SettingsGeneral(m.active_general_field));
                         }
                         _ => {
                             self.state.focused_input = None;
@@ -471,7 +525,12 @@ impl EvertySshApp {
                 let modal_w = 620.0f64.min(w - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let input_start_x = modal_x + 200.0;
-                self.state.handle_input_click(InputFieldId::SettingsSecurity(idx), logical_x, input_start_x, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::SettingsSecurity(idx),
+                    logical_x,
+                    input_start_x,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::SettingsGeneralField(idx) => {
@@ -484,7 +543,12 @@ impl EvertySshApp {
                 let modal_w = 620.0f64.min(w - 40.0);
                 let modal_x = (w - modal_w) / 2.0;
                 let input_start_x = modal_x + 250.0;
-                self.state.handle_input_click(InputFieldId::SettingsGeneral(idx), logical_x, input_start_x, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::SettingsGeneral(idx),
+                    logical_x,
+                    input_start_x,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::SettingsSavePassword => {
@@ -505,6 +569,24 @@ impl EvertySshApp {
             }
             HoverTarget::SettingsSaveGeneral => {
                 self.state.save_general_settings();
+                self.request_redraw();
+            }
+            HoverTarget::SettingsToggleHistory => {
+                if let Some(modal) = &mut self.state.settings_modal {
+                    modal.record_command_history = !modal.record_command_history;
+                }
+                self.request_redraw();
+            }
+            HoverTarget::SettingsBackupField(index) => {
+                self.state.focused_input = Some(InputFieldId::SettingsBackup(index));
+                let modal_w = 620.0f64.min(w - 40.0);
+                let input_x = (w - modal_w) / 2.0 + 210.0;
+                self.state.handle_input_click(
+                    InputFieldId::SettingsBackup(index),
+                    logical_x,
+                    input_x,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::SettingsToggleConfirmDelete => {
@@ -554,7 +636,14 @@ impl EvertySshApp {
                     if let Some(host) = dash.host.clone() {
                         self.state.connect_to_host(host);
                     } else if let Some(hid) = host_id {
-                        if let Some(host) = self.state.hosts_doc.hosts.iter().find(|h| h.id == hid).cloned() {
+                        if let Some(host) = self
+                            .state
+                            .hosts_doc
+                            .hosts
+                            .iter()
+                            .find(|h| h.id == hid)
+                            .cloned()
+                        {
                             self.state.connect_to_host(host);
                         }
                     } else {
@@ -562,6 +651,7 @@ impl EvertySshApp {
                         let hostname = parts.first().copied().unwrap_or("localhost").to_string();
                         let port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(22);
                         let host = crate::config::HostConfig {
+                            secret_ref: None,
                             id: uuid::Uuid::new_v4().to_string(),
                             name: format!("{username}@{hostname}"),
                             hostname,
@@ -607,7 +697,8 @@ impl EvertySshApp {
             HoverTarget::CommandItem(idx) => {
                 if let Some(cmd) = self.state.command_search_results.get(idx) {
                     let cmd_text = cmd.command.clone();
-                    self.state.open_confirm_run_modal(cmd_text, "Журнал команд".into());
+                    self.state
+                        .open_confirm_run_modal(cmd_text, "Журнал команд".into());
                 }
                 self.request_redraw();
             }
@@ -673,7 +764,14 @@ impl EvertySshApp {
                 let modal_y = (h - modal_h) / 2.0;
                 let f_y = modal_y + 55.0 + (idx as f64) * 58.0;
                 let input_start_x = modal_x + 34.0;
-                self.state.handle_snippet_field_click(idx, logical_x, logical_y, f_y, input_start_x, click_count);
+                self.state.handle_snippet_field_click(
+                    idx,
+                    logical_x,
+                    logical_y,
+                    f_y,
+                    input_start_x,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::ModalSnippetSave => {
@@ -736,7 +834,12 @@ impl EvertySshApp {
                 self.state.caret_visible = true;
                 self.state.caret_blink_time = Instant::now();
                 let input_start_x = w - 380.0 + 16.0;
-                self.state.handle_input_click(InputFieldId::TerminalSearch, logical_x, input_start_x, click_count);
+                self.state.handle_input_click(
+                    InputFieldId::TerminalSearch,
+                    logical_x,
+                    input_start_x,
+                    click_count,
+                );
                 self.request_redraw();
             }
             HoverTarget::TerminalSplitBtn => {
@@ -810,12 +913,17 @@ impl ApplicationHandler for EvertySshApp {
             .with_title("EvertySSH — Универсальный SSH клиент")
             .with_inner_size(WinitPhysicalSize::new(1120, 720));
 
-        let window = Arc::new(event_loop.create_window(attr).expect("Failed to create window"));
+        let window = Arc::new(
+            event_loop
+                .create_window(attr)
+                .expect("Failed to create window"),
+        );
 
         // Set sharp window icon from embedded Logo.png
         const LOGO_BYTES: &[u8] = include_bytes!("../Logo.png");
         if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
-            let resized = image::imageops::resize(&img, 64, 64, image::imageops::FilterType::Lanczos3);
+            let resized =
+                image::imageops::resize(&img, 64, 64, image::imageops::FilterType::Lanczos3);
             let (w, h) = resized.dimensions();
             if let Ok(icon) = winit::window::Icon::from_rgba(resized.into_raw(), w, h) {
                 window.set_window_icon(Some(icon));
@@ -847,10 +955,15 @@ impl ApplicationHandler for EvertySshApp {
     ) {
         match event {
             WindowEvent::CloseRequested => {
+                self.state.shutdown_sessions();
                 event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
-                let scale_factor = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0);
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0);
                 let logical_w = new_size.width as f64 / scale_factor;
                 let logical_h = new_size.height as f64 / scale_factor;
                 self.state.resize_terminals(logical_w, logical_h);
@@ -865,10 +978,18 @@ impl ApplicationHandler for EvertySshApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
-                let scale_factor = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0);
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0);
                 let logical_x = position.x / scale_factor;
                 let logical_y = position.y / scale_factor;
-                let win_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(WinitPhysicalSize::new(1120, 720));
+                let win_size = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.inner_size())
+                    .unwrap_or(WinitPhysicalSize::new(1120, 720));
                 let w = (win_size.width as f64) / scale_factor;
                 let h = (win_size.height as f64) / scale_factor;
 
@@ -889,20 +1010,27 @@ impl ApplicationHandler for EvertySshApp {
                 } else if self.state.is_dragging_scrollbar {
                     let delta_y = logical_y - self.state.scrollbar_drag_start_y;
                     let header_h = self.state.header_height;
-                    let sb_h = (h - header_h - self.state.footer_height - 12.0).max(20.0);
+                    let sb_h = (h - header_h - self.state.footer_height - 12.0).max(10.0);
                     if let Some(tab) = self.state.tabs.get_mut(self.state.active_tab) {
                         let scrollback_len = tab.terminal.scrollback_len();
-                        if scrollback_len > 0 {
+                        if scrollback_len > 0 && sb_h > 0.0 {
                             let rows = self.state.terminal_rows;
                             let total_lines = scrollback_len + rows;
-                            let visible_ratio = (rows as f64) / (total_lines as f64);
-                            let th = (sb_h * visible_ratio).clamp(24.0, sb_h);
+                            let visible_ratio = if total_lines > 0 {
+                                (rows as f64) / (total_lines as f64)
+                            } else {
+                                1.0
+                            };
+                            let min_th = 14.0f64.min(sb_h);
+                            let th = (sb_h * visible_ratio).max(min_th).min(sb_h);
                             let track_travel = sb_h - th;
                             if track_travel > 0.0 {
-                                let offset_delta = -(delta_y / track_travel) * (scrollback_len as f64);
-                                let new_offset = (self.state.scrollbar_drag_start_offset as f64 + offset_delta)
-                                    .clamp(0.0, scrollback_len as f64)
-                                    .round() as usize;
+                                let offset_delta =
+                                    -(delta_y / track_travel) * (scrollback_len as f64);
+                                let new_offset =
+                                    (self.state.scrollbar_drag_start_offset as f64 + offset_delta)
+                                        .clamp(0.0, scrollback_len as f64)
+                                        .round() as usize;
                                 tab.terminal.set_scroll_offset(new_offset);
                                 self.request_redraw();
                             }
@@ -931,10 +1059,18 @@ impl ApplicationHandler for EvertySshApp {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let scale_factor = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0);
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor())
+                    .unwrap_or(1.0);
                 let logical_x = self.cursor_pos.0 / scale_factor;
                 let logical_y = self.cursor_pos.1 / scale_factor;
-                let win_size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(WinitPhysicalSize::new(1120, 720));
+                let win_size = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.inner_size())
+                    .unwrap_or(WinitPhysicalSize::new(1120, 720));
                 let w = (win_size.width as f64) / scale_factor;
                 let h = (win_size.height as f64) / scale_factor;
 
@@ -948,22 +1084,39 @@ impl ApplicationHandler for EvertySshApp {
                             let target_field = match self.state.hover {
                                 HoverTarget::ModalField(idx) => Some(InputFieldId::AddHost(idx)),
                                 HoverTarget::KeyToolField(idx) => Some(InputFieldId::KeyTool(idx)),
-                                HoverTarget::ModalSnippetField(idx) => Some(InputFieldId::AddSnippet(idx)),
+                                HoverTarget::ModalSnippetField(idx) => {
+                                    Some(InputFieldId::AddSnippet(idx))
+                                }
                                 HoverTarget::SidebarSearchHost => Some(InputFieldId::HostSearch),
-                                HoverTarget::SidebarSearchSnippet => Some(InputFieldId::SnippetSearch),
-                                HoverTarget::SidebarSearchCommand => Some(InputFieldId::CommandSearch),
+                                HoverTarget::SidebarSearchSnippet => {
+                                    Some(InputFieldId::SnippetSearch)
+                                }
+                                HoverTarget::SidebarSearchCommand => {
+                                    Some(InputFieldId::CommandSearch)
+                                }
                                 _ => None,
                             };
 
                             if let Some(f_id) = target_field {
-                                self.state.open_input_context_menu(logical_x, logical_y, f_id, w, h);
+                                self.state
+                                    .open_input_context_menu(logical_x, logical_y, f_id, w, h);
                                 self.request_redraw();
-                            } else if let Some(pos) = self.state.pos_from_coords(logical_x, logical_y) {
+                            } else if let Some(pos) =
+                                self.state.pos_from_coords(logical_x, logical_y)
+                            {
                                 // PuTTY style right-click:
                                 // If user clicked on existing selection, show Context Menu (Copy, Search in Google, Paste)
                                 // Otherwise, directly paste clipboard text into the terminal!
-                                let has_sel = self.state.selection.as_ref().map_or(false, |s| !s.is_empty());
-                                let clicked_on_sel = self.state.selection.as_ref().map_or(false, |s| s.contains(pos.col, pos.row));
+                                let has_sel = self
+                                    .state
+                                    .selection
+                                    .as_ref()
+                                    .map_or(false, |s| !s.is_empty());
+                                let clicked_on_sel = self
+                                    .state
+                                    .selection
+                                    .as_ref()
+                                    .map_or(false, |s| s.contains(pos.col, pos.row));
 
                                 if has_sel && clicked_on_sel {
                                     self.state.open_context_menu_at(logical_x, logical_y, w, h);
@@ -1030,13 +1183,21 @@ impl ApplicationHandler for EvertySshApp {
                     HoverTarget::SidebarSearchHost => Some(InputFieldId::HostSearch),
                     HoverTarget::SidebarSearchSnippet => Some(InputFieldId::SnippetSearch),
                     HoverTarget::SidebarSearchCommand => Some(InputFieldId::CommandSearch),
-                    HoverTarget::SettingsSecurityField(idx) => Some(InputFieldId::SettingsSecurity(idx)),
-                    HoverTarget::SettingsGeneralField(idx) => Some(InputFieldId::SettingsGeneral(idx)),
+                    HoverTarget::SettingsSecurityField(idx) => {
+                        Some(InputFieldId::SettingsSecurity(idx))
+                    }
+                    HoverTarget::SettingsGeneralField(idx) => {
+                        Some(InputFieldId::SettingsGeneral(idx))
+                    }
                     _ => {
                         if self.state.add_snippet_modal.is_open {
-                            Some(InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field))
+                            Some(InputFieldId::AddSnippet(
+                                self.state.add_snippet_modal.active_field,
+                            ))
                         } else if self.state.add_host_modal.is_open {
-                            Some(InputFieldId::AddHost(self.state.add_host_modal.active_field))
+                            Some(InputFieldId::AddHost(
+                                self.state.add_host_modal.active_field,
+                            ))
                         } else {
                             None
                         }
@@ -1057,9 +1218,9 @@ impl ApplicationHandler for EvertySshApp {
 
                 if let Some(tab) = self.state.tabs.get_mut(self.state.active_tab) {
                     if lines > 0 {
-                        tab.terminal.scroll_up(lines.abs() as usize * 3);
+                        tab.terminal.scroll_up(lines.unsigned_abs() as usize * 3);
                     } else if lines < 0 {
-                        tab.terminal.scroll_down(lines.abs() as usize * 3);
+                        tab.terminal.scroll_down(lines.unsigned_abs() as usize * 3);
                     }
                     self.request_redraw();
                 }
@@ -1075,87 +1236,29 @@ impl ApplicationHandler for EvertySshApp {
                     },
                 ..
             } => {
-                // Hotkeys
-                if self.modifiers.control_key() && self.modifiers.alt_key() {
-                    // Ctrl+Alt+S (Split Screen Toggle)
-                    if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyS, "s", &["ы", "Ы"]) {
-                        self.state.toggle_split_view();
-                        self.request_redraw();
-                        return;
-                    }
-                } else if self.modifiers.control_key() {
-                    if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyV, "v", &["м", "М"]) {
+                // If App is Locked
+                if self.state.is_app_locked {
+                    if self.modifiers.control_key()
+                        && matches_shortcut(
+                            &physical_key,
+                            &logical_key,
+                            KeyCode::KeyV,
+                            "v",
+                            &["м", "М"],
+                        )
+                    {
                         self.state.paste_clipboard_text();
                         self.request_redraw();
                         return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyC, "c", &["с", "С"]) {
-                        let copied = self.state.copy_active_selection_or_terminal();
-                        if !copied && !self.state.is_modal_open() {
-                            self.state.send_to_active_terminal("\x03");
-                        }
-                        self.request_redraw();
-                        return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyX, "x", &["ч", "Ч"]) {
-                        if self.state.cut_active_selection() {
-                            self.request_redraw();
-                            return;
-                        }
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyA, "a", &["ф", "Ф"]) {
-                        if self.state.select_all_active_input() {
-                            self.request_redraw();
-                            return;
-                        }
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyD, "d", &["в", "В"]) {
-                        if !self.state.is_modal_open() {
-                            self.state.send_to_active_terminal("\x04");
-                            self.request_redraw();
-                            return;
-                        }
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyL, "l", &["д", "Д"]) {
-                        if !self.state.is_modal_open() {
-                            self.state.send_to_active_terminal("\x0c");
-                            self.request_redraw();
-                            return;
-                        }
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyN, "n", &["т", "Т"]) {
-                        self.state.open_add_host_dialog();
-                        self.request_redraw();
-                        return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyR, "r", &["к", "К"]) {
-                        self.state.palette_open = !self.state.palette_open;
-                        if self.state.palette_open {
-                            self.state.refresh_command_search();
-                            self.state.caret_visible = true;
-                            self.state.caret_blink_time = Instant::now();
-                        }
-                        self.request_redraw();
-                        return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyT, "t", &["е", "Е"]) {
-                        if let Some(host) = self.state.hosts_doc.hosts.first().cloned() {
-                            self.state.connect_to_host(host);
-                            self.request_redraw();
-                        }
-                        return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyW, "w", &["ц", "Ц"]) {
-                        self.state.close_active_tab();
-                        self.request_redraw();
-                        return;
-                    } else if matches_shortcut(&physical_key, &logical_key, KeyCode::KeyF, "f", &["а", "А"]) {
-                        self.state.open_terminal_search();
+                    }
+                    if self.state.handle_text_navigation_key(
+                        &logical_key,
+                        self.modifiers.control_key(),
+                        self.modifiers.shift_key(),
+                    ) {
                         self.request_redraw();
                         return;
                     }
-                }
-
-                // Shift+Insert paste
-                if self.modifiers.shift_key() && matches!(&logical_key, Key::Named(NamedKey::Insert)) {
-                    self.state.paste_clipboard_text();
-                    self.request_redraw();
-                    return;
-                }
-
-                // If App is Locked
-                if self.state.is_app_locked {
                     self.state.caret_visible = true;
                     self.state.caret_blink_time = Instant::now();
                     match &logical_key {
@@ -1180,6 +1283,159 @@ impl ApplicationHandler for EvertySshApp {
                     return;
                 }
 
+                // Hotkeys
+                if self.modifiers.control_key() && self.modifiers.alt_key() {
+                    // Ctrl+Alt+S (Split Screen Toggle)
+                    if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyS,
+                        "s",
+                        &["ы", "Ы"],
+                    ) {
+                        self.state.toggle_split_view();
+                        self.request_redraw();
+                        return;
+                    }
+                } else if self.modifiers.control_key() {
+                    if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyV,
+                        "v",
+                        &["м", "М"],
+                    ) {
+                        self.state.paste_clipboard_text();
+                        self.request_redraw();
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyC,
+                        "c",
+                        &["с", "С"],
+                    ) {
+                        let copied = self.state.copy_active_selection_or_terminal();
+                        if !copied && !self.state.is_modal_open() {
+                            self.state.send_to_active_terminal("\x03");
+                        }
+                        self.request_redraw();
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyX,
+                        "x",
+                        &["ч", "Ч"],
+                    ) {
+                        if self.state.cut_active_selection() {
+                            self.request_redraw();
+                            return;
+                        }
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyA,
+                        "a",
+                        &["ф", "Ф"],
+                    ) {
+                        if self.state.select_all_active_input() {
+                            self.request_redraw();
+                            return;
+                        }
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyD,
+                        "d",
+                        &["в", "В"],
+                    ) {
+                        if !self.state.is_modal_open() {
+                            self.state.send_to_active_terminal("\x04");
+                            self.request_redraw();
+                            return;
+                        }
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyL,
+                        "l",
+                        &["д", "Д"],
+                    ) {
+                        if !self.state.is_modal_open() {
+                            self.state.send_to_active_terminal("\x0c");
+                            self.request_redraw();
+                            return;
+                        }
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyN,
+                        "n",
+                        &["т", "Т"],
+                    ) {
+                        self.state.open_add_host_dialog();
+                        self.request_redraw();
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyR,
+                        "r",
+                        &["к", "К"],
+                    ) {
+                        self.state.palette_open = !self.state.palette_open;
+                        if self.state.palette_open {
+                            self.state.refresh_command_search();
+                            self.state.caret_visible = true;
+                            self.state.caret_blink_time = Instant::now();
+                        }
+                        self.request_redraw();
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyT,
+                        "t",
+                        &["е", "Е"],
+                    ) {
+                        if let Some(host) = self.state.hosts_doc.hosts.first().cloned() {
+                            self.state.connect_to_host(host);
+                            self.request_redraw();
+                        }
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyW,
+                        "w",
+                        &["ц", "Ц"],
+                    ) {
+                        self.state.close_active_tab();
+                        self.request_redraw();
+                        return;
+                    } else if matches_shortcut(
+                        &physical_key,
+                        &logical_key,
+                        KeyCode::KeyF,
+                        "f",
+                        &["а", "А"],
+                    ) {
+                        self.state.open_terminal_search();
+                        self.request_redraw();
+                        return;
+                    }
+                }
+
+                // Shift+Insert paste
+                if self.modifiers.shift_key()
+                    && matches!(&logical_key, Key::Named(NamedKey::Insert))
+                {
+                    self.state.paste_clipboard_text();
+                    self.request_redraw();
+                    return;
+                }
+
                 // If Terminal Search is Open
                 if self.state.search_state.is_open {
                     self.state.caret_visible = true;
@@ -1200,7 +1456,11 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
@@ -1312,17 +1572,43 @@ impl ApplicationHandler for EvertySshApp {
                         Key::Named(NamedKey::Tab) => {
                             match settings.active_tab {
                                 SettingsTab::Security => {
-                                    let has_existing = self.state.hosts_doc.settings.master_password_hash.is_some();
+                                    let has_existing = self
+                                        .state
+                                        .hosts_doc
+                                        .settings
+                                        .master_password_hash
+                                        .is_some();
                                     if has_existing {
-                                        settings.active_security_field = (settings.active_security_field + 1) % 3;
+                                        settings.active_security_field =
+                                            (settings.active_security_field + 1) % 3;
                                     } else {
-                                        settings.active_security_field = if settings.active_security_field == 1 { 2 } else { 1 };
+                                        settings.active_security_field =
+                                            if settings.active_security_field == 1 {
+                                                2
+                                            } else {
+                                                1
+                                            };
                                     }
-                                    self.state.focused_input = Some(InputFieldId::SettingsSecurity(settings.active_security_field));
+                                    self.state.focused_input =
+                                        Some(InputFieldId::SettingsSecurity(
+                                            settings.active_security_field,
+                                        ));
+                                }
+                                SettingsTab::Backup => {
+                                    self.state.focused_input =
+                                        Some(match self.state.focused_input {
+                                            Some(InputFieldId::SettingsBackup(0)) => {
+                                                InputFieldId::SettingsBackup(1)
+                                            }
+                                            _ => InputFieldId::SettingsBackup(0),
+                                        });
                                 }
                                 SettingsTab::General => {
-                                    settings.active_general_field = (settings.active_general_field + 1) % 2;
-                                    self.state.focused_input = Some(InputFieldId::SettingsGeneral(settings.active_general_field));
+                                    settings.active_general_field =
+                                        (settings.active_general_field + 1) % 2;
+                                    self.state.focused_input = Some(InputFieldId::SettingsGeneral(
+                                        settings.active_general_field,
+                                    ));
                                 }
                                 _ => {}
                             }
@@ -1339,7 +1625,11 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
@@ -1400,7 +1690,11 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
@@ -1444,12 +1738,18 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
                             if let Some(ref t) = text {
-                                let active_fid = InputFieldId::AddSnippet(self.state.add_snippet_modal.active_field);
+                                let active_fid = InputFieldId::AddSnippet(
+                                    self.state.add_snippet_modal.active_field,
+                                );
                                 if let Some(inp) = self.state.get_text_input_mut(active_fid) {
                                     inp.insert_str(t);
                                     inp.ensure_cursor_visible(55);
@@ -1492,12 +1792,17 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
                             if let Some(ref t) = text {
-                                let active_fid = InputFieldId::KeyTool(self.state.key_tool_modal.active_field);
+                                let active_fid =
+                                    InputFieldId::KeyTool(self.state.key_tool_modal.active_field);
                                 if let Some(inp) = self.state.get_text_input_mut(active_fid) {
                                     inp.insert_str(t);
                                     inp.ensure_cursor_visible(40);
@@ -1521,7 +1826,12 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         Key::Named(NamedKey::Tab) => {
-                            let max_fields = if self.state.add_host_modal.auth_mode == AuthModeChoice::Agent { 5 } else { 6 };
+                            let max_fields =
+                                if self.state.add_host_modal.auth_mode == AuthModeChoice::Agent {
+                                    5
+                                } else {
+                                    6
+                                };
                             if self.modifiers.shift_key() {
                                 if self.state.add_host_modal.active_field == 0 {
                                     self.state.add_host_modal.active_field = max_fields - 1;
@@ -1529,7 +1839,8 @@ impl ApplicationHandler for EvertySshApp {
                                     self.state.add_host_modal.active_field -= 1;
                                 }
                             } else {
-                                self.state.add_host_modal.active_field = (self.state.add_host_modal.active_field + 1) % max_fields;
+                                self.state.add_host_modal.active_field =
+                                    (self.state.add_host_modal.active_field + 1) % max_fields;
                             }
                             self.request_redraw();
                             return;
@@ -1540,7 +1851,11 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         _ => {
-                            if self.state.handle_text_navigation_key(&logical_key, self.modifiers.control_key(), self.modifiers.shift_key()) {
+                            if self.state.handle_text_navigation_key(
+                                &logical_key,
+                                self.modifiers.control_key(),
+                                self.modifiers.shift_key(),
+                            ) {
                                 self.request_redraw();
                                 return;
                             }
@@ -1566,8 +1881,9 @@ impl ApplicationHandler for EvertySshApp {
                         }
                         Key::Named(NamedKey::ArrowDown) => {
                             if !self.state.command_search_results.is_empty() {
-                                self.state.selected_search_idx = (self.state.selected_search_idx + 1)
-                                    .min(self.state.command_search_results.len().saturating_sub(1));
+                                self.state.selected_search_idx = (self.state.selected_search_idx
+                                    + 1)
+                                .min(self.state.command_search_results.len().saturating_sub(1));
                                 self.request_redraw();
                             }
                             return;
@@ -1596,10 +1912,17 @@ impl ApplicationHandler for EvertySshApp {
                             return;
                         }
                         Key::Named(NamedKey::Enter) => {
-                            if let Some(cmd) = self.state.command_search_results.get(self.state.selected_search_idx) {
+                            if let Some(cmd) = self
+                                .state
+                                .command_search_results
+                                .get(self.state.selected_search_idx)
+                            {
                                 let cmd_text = cmd.command.clone();
                                 self.state.palette_open = false;
-                                self.state.open_confirm_run_modal(cmd_text, "Палитра команд (Ctrl+R)".into());
+                                self.state.open_confirm_run_modal(
+                                    cmd_text,
+                                    "Палитра команд (Ctrl+R)".into(),
+                                );
                             } else {
                                 self.state.palette_open = false;
                             }
@@ -1719,7 +2042,10 @@ fn main() {
         let _ = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
             .set_title("EvertySSH - Ошибка")
-            .set_description(&format!("Приложение аварийно завершило работу:\n{}\n\nПодробности записаны в crash.log", payload))
+            .set_description(&format!(
+                "Приложение аварийно завершило работу:\n{}\n\nПодробности записаны в crash.log",
+                payload
+            ))
             .show();
     }));
 
@@ -1730,9 +2056,19 @@ fn main() {
 
     let tokio_handle = tokio_runtime.handle().clone();
 
-    let _ = config::load_hosts();
-
     let event_loop = EventLoop::new().expect("Failed to create winit event loop");
-    let mut app = EvertySshApp::new(tokio_handle);
+    let mut app = match EvertySshApp::new(tokio_handle) {
+        Ok(app) => app,
+        Err(error) => {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("EvertySSH — Configuration error")
+                .set_description(format!(
+                    "{error}\n\nStartup stopped. Your configuration has not been replaced."
+                ))
+                .show();
+            return;
+        }
+    };
     event_loop.run_app(&mut app).expect("Application run error");
 }

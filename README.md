@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v0.2.3-2dd4bf?style=for-the-badge" alt="Release v0.2.3" />
+  <img src="https://img.shields.io/badge/Release-v0.2.4-2dd4bf?style=for-the-badge" alt="Release v0.2.4" />
   <img src="https://img.shields.io/badge/Language-Rust%202021-DEA584?style=for-the-badge&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/UI_Engine-EvertyUI-2dd4bf?style=for-the-badge" alt="EvertyUI" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0284c7?style=for-the-badge" alt="Platforms" />
@@ -88,8 +88,8 @@ Learn more in the [EvertyUI Architecture Guide](docs/ARCHITECTURE.md).
 * **Mouse Selection & Clipboard:** Seamless selection, auto-scroll, and right-click context menu.
 
 ### 📜 Command History & Session Dashboard
-* Persistent SQLite database (`~/.evertyssh/history.db`) records session duration, commands executed, and connection timestamps.
-* **Command Palette (`Ctrl+R`):** Fuzzy history search with command preview and direct terminal dispatch.
+* SQLite (`~/.evertyssh/history.db`) stores session timestamps and duration. Command recording is off by default and uses [shell integration](docs/SHELL_INTEGRATION.md), never raw keystrokes.
+* **Command Palette (`Ctrl+R`):** Substring history search with command preview and direct terminal dispatch.
 * **Session Dashboard:** Detailed audit log for individual server sessions.
 
 ### 🧩 Command Snippets
@@ -99,7 +99,7 @@ Learn more in the [EvertyUI Architecture Guide](docs/ARCHITECTURE.md).
 ### 🔒 Security & Settings
 * **Master Password Protection:** Lock the client on startup with secure password hashing.
 * **Bilingual Interface:** Real-time 1-click toggle between English and Russian (`RU / EN`).
-* **Backup & Restore:** Fast JSON export and import of all servers, settings, and snippets.
+* **Backup & Restore:** Password-encrypted `.evertybackup` files contain server profiles, credentials and settings. Import also accepts legacy v1 JSON files; new exports are always encrypted. Snippets and session history remain in SQLite.
 * **About Tab:** Quick links to developer channels, repository, and Everty ecosystem resources.
 
 ---
@@ -188,3 +188,22 @@ Explore detailed documentation in the [`docs/`](docs/) directory:
 ## 📄 License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+
+## Credentials and configuration
+
+Saved passwords and key passphrases use Windows Credential Manager, macOS
+Keychain or Linux Secret Service. `hosts.toml` contains opaque credential
+references. Existing plaintext credentials are migrated on startup; if the
+credential store is unavailable, startup stops and the original file is retained.
+On Linux, run an unlocked Secret Service provider such as GNOME Keyring or
+KWallet with its Secret Service interface enabled.
+
+The optional master password locks the interface and uses Argon2id. It does not
+encrypt host metadata or the SQLite history database. Backup encryption uses a
+separate password entered in Settings → Backup; repeat it for export, enter it
+once for import. Existing hosts are merged by ID, settings are restored, and the
+local master password is retained. SSH private-key files are not included.
+
+Configuration writes use atomic replacement and detect external edits. Resolve
+configuration errors and restart before saving; corrupt files are not replaced
+with defaults. See [security](docs/SECURITY.md) and [shell integration](docs/SHELL_INTEGRATION.md).

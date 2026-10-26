@@ -21,7 +21,7 @@ A clear and concise description of what you expected to happen.
 
 **Environment Information:**
  - OS: [e.g. Windows 11, Ubuntu 22.04, macOS Sonoma]
- - EvertySSH Version: [e.g. v0.2.3]
+ - EvertySSH Version: [e.g. v0.2.4]
  - Architecture: [e.g. x64, ARM64]
 
 **Additional Context**

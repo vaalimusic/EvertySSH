@@ -1,11 +1,19 @@
+mod dialogs;
+mod history;
+#[cfg(test)]
+mod regression_tests;
+mod sessions;
+mod settings;
+use crate::config_store::ConfigStore;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use crossbeam_channel::{Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use winit::window::CursorIcon;
 
 use crate::config::{
-    hash_password, load_hosts, save_hosts, verify_password, AppLanguage, AuthConfig, ExportBundle,
-    HostConfig, HostsDocument,
+    hash_password, verify_password, AppLanguage, AuthConfig, ExportBundle, HostConfig,
+    HostsDocument,
 };
 use crate::db::{CommandRecord, HistoryDb, SessionRecord, SnippetRecord};
 use crate::i18n::tr;
@@ -389,7 +397,8 @@ impl TextInput {
         } else if delta_chars < 0 {
             // Scroll towards end (right)
             let max_scroll = total.saturating_sub(max_visible_chars.min(total));
-            self.scroll_offset = (self.scroll_offset + delta_chars.unsigned_abs() as usize).min(max_scroll);
+            self.scroll_offset =
+                (self.scroll_offset + delta_chars.unsigned_abs() as usize).min(max_scroll);
         }
         // Keep cursor in view when scrolling so user can immediately edit where they scrolled
         if self.cursor < self.scroll_offset {
@@ -448,7 +457,9 @@ impl TerminalSelection {
     }
 
     pub fn normalized(&self) -> (TerminalPos, TerminalPos) {
-        if self.start.row < self.end.row || (self.start.row == self.end.row && self.start.col <= self.end.col) {
+        if self.start.row < self.end.row
+            || (self.start.row == self.end.row && self.start.col <= self.end.col)
+        {
             (self.start, self.end)
         } else {
             (self.end, self.start)
@@ -522,15 +533,11 @@ pub fn open_browser_url(url: &str) {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open")
-            .arg(trimmed)
-            .spawn();
+        let _ = std::process::Command::new("open").arg(trimmed).spawn();
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(trimmed)
-            .spawn();
+        let _ = std::process::Command::new("xdg-open").arg(trimmed).spawn();
     }
 }
 
@@ -621,16 +628,22 @@ pub fn generate_ssh_key(
 
     let mut cmd = std::process::Command::new("ssh-keygen");
     cmd.arg("-q")
-        .arg("-t").arg(algo_flag)
-        .arg("-C").arg(comment.trim())
-        .arg("-N").arg(passphrase)
-        .arg("-f").arg(&priv_path);
+        .arg("-t")
+        .arg(algo_flag)
+        .arg("-C")
+        .arg(comment.trim())
+        .arg("-N")
+        .arg(passphrase)
+        .arg("-f")
+        .arg(&priv_path);
 
     if algo == KeyAlgo::Rsa4096 {
         cmd.arg("-b").arg("4096");
     }
 
-    let output = cmd.output().map_err(|e| format!("Не удалось запустить ssh-keygen: {e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Не удалось запустить ssh-keygen: {e}"))?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("ssh-keygen завершился с ошибкой: {err}"));
@@ -639,7 +652,10 @@ pub fn generate_ssh_key(
     let pub_content = std::fs::read_to_string(&pub_path)
         .map_err(|e| format!("Не удалось прочитать сгенерированный публичный ключ: {e}"))?;
 
-    Ok((priv_path.to_string_lossy().to_string(), pub_content.trim().to_string()))
+    Ok((
+        priv_path.to_string_lossy().to_string(),
+        pub_content.trim().to_string(),
+    ))
 }
 
 pub fn make_authorized_keys_cmd(pub_key: &str) -> String {
@@ -657,6 +673,7 @@ pub enum InputFieldId {
     HostSearch,
     SettingsSecurity(usize),
     SettingsGeneral(usize),
+    SettingsBackup(usize),
     LockPassword,
     TerminalSearch,
 }
@@ -783,25 +800,33 @@ pub struct ConfirmRunModalLayout {
 impl ConfirmRunModalLayout {
     #[inline]
     pub fn cancel_contains(&self, x: f64, y: f64) -> bool {
-        x >= self.cancel_rect.0 && x <= self.cancel_rect.0 + self.cancel_rect.2 &&
-        y >= self.cancel_rect.1 && y <= self.cancel_rect.1 + self.cancel_rect.3
+        x >= self.cancel_rect.0
+            && x <= self.cancel_rect.0 + self.cancel_rect.2
+            && y >= self.cancel_rect.1
+            && y <= self.cancel_rect.1 + self.cancel_rect.3
     }
 
     #[inline]
     pub fn copy_contains(&self, x: f64, y: f64) -> bool {
-        x >= self.copy_rect.0 && x <= self.copy_rect.0 + self.copy_rect.2 &&
-        y >= self.copy_rect.1 && y <= self.copy_rect.1 + self.copy_rect.3
+        x >= self.copy_rect.0
+            && x <= self.copy_rect.0 + self.copy_rect.2
+            && y >= self.copy_rect.1
+            && y <= self.copy_rect.1 + self.copy_rect.3
     }
 
     #[inline]
     pub fn exec_contains(&self, x: f64, y: f64) -> bool {
-        x >= self.exec_rect.0 && x <= self.exec_rect.0 + self.exec_rect.2 &&
-        y >= self.exec_rect.1 && y <= self.exec_rect.1 + self.exec_rect.3
+        x >= self.exec_rect.0
+            && x <= self.exec_rect.0 + self.exec_rect.2
+            && y >= self.exec_rect.1
+            && y <= self.exec_rect.1 + self.exec_rect.3
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ConfirmRunCommandModal {
+    pub paste: bool,
+    pub target_session_id: Option<String>,
     pub is_open: bool,
     pub command: String,
     pub source_title: String,
@@ -848,25 +873,54 @@ pub fn check_dangerous_command(cmd: &str) -> (bool, Option<String>) {
     let words: Vec<&str> = lower.split_whitespace().collect();
 
     if lower.contains("rm -rf") || lower.contains("rm -fr") || lower.contains("rm -r") {
-        return (true, Some("Рекурсивное удаление файлов и каталогов (rm -r)".into()));
+        return (
+            true,
+            Some("Рекурсивное удаление файлов и каталогов (rm -r)".into()),
+        );
     }
     if words.contains(&"rm") || words.contains(&"rmdir") {
-        return (true, Some("Команда содержит операцию удаления файлов/папок".into()));
+        return (
+            true,
+            Some("Команда содержит операцию удаления файлов/папок".into()),
+        );
     }
-    if words.contains(&"reboot") || words.contains(&"shutdown") || lower.contains("init 0") || lower.contains("init 6") {
-        return (true, Some("Команда перезагрузит или выключит сервер".into()));
+    if words.contains(&"reboot")
+        || words.contains(&"shutdown")
+        || lower.contains("init 0")
+        || lower.contains("init 6")
+    {
+        return (
+            true,
+            Some("Команда перезагрузит или выключит сервер".into()),
+        );
     }
     if words.contains(&"kill") || words.contains(&"killall") || words.contains(&"pkill") {
-        return (true, Some("Команда принудительно завершит системные процессы".into()));
+        return (
+            true,
+            Some("Команда принудительно завершит системные процессы".into()),
+        );
     }
-    if lower.contains("dd if=") || words.contains(&"mkfs") || words.contains(&"fdisk") || words.contains(&"parted") {
-        return (true, Some("Низкоуровневая операция с дисками и разделами".into()));
+    if lower.contains("dd if=")
+        || words.contains(&"mkfs")
+        || words.contains(&"fdisk")
+        || words.contains(&"parted")
+    {
+        return (
+            true,
+            Some("Низкоуровневая операция с дисками и разделами".into()),
+        );
     }
-    if lower.contains("drop database") || lower.contains("drop table") || lower.contains("truncate ") {
+    if lower.contains("drop database")
+        || lower.contains("drop table")
+        || lower.contains("truncate ")
+    {
         return (true, Some("Удаление таблиц или базы данных".into()));
     }
     if lower.contains("chmod -r 777") || lower.contains("chmod 777") {
-        return (true, Some("Открытие полного небезопасного доступа ко всем файлам (777)".into()));
+        return (
+            true,
+            Some("Открытие полного небезопасного доступа ко всем файлам (777)".into()),
+        );
     }
     if lower.contains("> /dev/") {
         return (true, Some("Прямая перезапись системного устройства".into()));
@@ -895,11 +949,14 @@ pub struct SettingsModal {
 
     // Backup state
     pub backup_msg: Option<(String, bool)>,
+    pub backup_password: TextInput,
+    pub backup_confirm: TextInput,
 
     // General fields
     pub default_user: TextInput,
     pub scrollback_lines: TextInput,
     pub confirm_delete: bool,
+    pub record_command_history: bool,
     pub active_general_field: usize,
     pub general_msg: Option<(String, bool)>,
     pub show_passwords: bool,
@@ -1014,6 +1071,8 @@ pub enum HoverTarget {
     SettingsImportJson,
     SettingsSaveGeneral,
     SettingsToggleConfirmDelete,
+    SettingsToggleHistory,
+    SettingsBackupField(usize),
     SettingsSecurityField(usize),
     SettingsGeneralField(usize),
     SettingsTogglePassword,
@@ -1093,9 +1152,18 @@ pub struct HostKeyPromptModal {
 }
 
 pub enum AppEvent {
-    SshOutput { session_id: String, data: Vec<u8> },
-    SshConnected { session_id: String, handle: SshSessionHandle },
-    SshDisconnected { session_id: String, error: Option<String> },
+    SshOutput {
+        session_id: String,
+        data: Vec<u8>,
+    },
+    SshConnected {
+        session_id: String,
+        handle: SshSessionHandle,
+    },
+    SshDisconnected {
+        session_id: String,
+        error: Option<String>,
+    },
     HostKeyPrompt {
         session_id: String,
         host: String,
@@ -1115,7 +1183,6 @@ pub struct SessionTab {
     pub username: String,
     pub terminal: Terminal,
     pub handle: Option<SshSessionHandle>,
-    pub current_input_buffer: String,
     pub status: String,
     pub host_id: Option<String>,
     pub host_config: Option<HostConfig>,
@@ -1123,6 +1190,9 @@ pub struct SessionTab {
 
 pub struct AppState {
     pub hosts_doc: HostsDocument,
+    config_store: ConfigStore,
+    pub pending_host_keys: VecDeque<HostKeyPromptModal>,
+    pub pending_connections: HashMap<String, tokio::task::AbortHandle>,
     pub db: HistoryDb,
     pub sidebar_tab: SidebarTab,
     pub tabs: Vec<SessionTab>,
@@ -1210,19 +1280,33 @@ pub const TERMINAL_CHAR_WIDTH: f64 = 7.6171875;
 pub const TERMINAL_LINE_HEIGHT: f64 = 18.0;
 
 impl AppState {
-    pub fn new(tokio_handle: tokio::runtime::Handle) -> Self {
-        let hosts_doc = load_hosts().unwrap_or_default();
+    pub fn new(tokio_handle: tokio::runtime::Handle) -> Result<Self, String> {
+        #[cfg(not(test))]
+        let mut config_store = ConfigStore::new(
+            crate::config::hosts_file_path(),
+            std::sync::Arc::new(crate::secrets::SystemSecrets),
+        );
+        #[cfg(test)]
+        let mut config_store = ConfigStore::temporary();
+        let hosts_doc = config_store.load()?;
         let is_app_locked = hosts_doc.settings.master_password_hash.is_some();
-        let db = HistoryDb::open_default().unwrap_or_else(|_| HistoryDb::open_in_memory().unwrap());
+        #[cfg(not(test))]
+        let db =
+            HistoryDb::open_default().map_err(|e| format!("Cannot open history database: {e}"))?;
+        #[cfg(test)]
+        let db = HistoryDb::open_in_memory().map_err(|e| e.to_string())?;
 
-        let (event_tx, event_rx) = crossbeam_channel::unbounded();
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
 
         let recent_sessions = db.list_recent_sessions(30).unwrap_or_default();
         let snippets = db.list_snippets().unwrap_or_default();
         let initial_cmds = db.list_recent_commands(50).unwrap_or_default();
 
-        Self {
+        Ok(Self {
             hosts_doc,
+            config_store,
+            pending_host_keys: VecDeque::new(),
+            pending_connections: HashMap::new(),
             db,
             sidebar_tab: SidebarTab::Hosts,
             tabs: Vec::new(),
@@ -1280,7 +1364,7 @@ impl AppState {
             event_tx,
             event_rx,
             tokio_handle,
-        }
+        })
     }
 
     pub fn resize_terminals(&mut self, logical_w: f64, logical_h: f64) {
@@ -1296,7 +1380,9 @@ impl AppState {
             term_w
         };
 
-        let cols = ((eff_term_w - 24.0) / TERMINAL_CHAR_WIDTH).floor().max(20.0) as usize;
+        let cols = ((eff_term_w - 24.0) / TERMINAL_CHAR_WIDTH)
+            .floor()
+            .max(20.0) as usize;
         // Available vertical height inside terminal viewport:
         // Subtract toolbar (30.0) and top+bottom padding (6.0 + 6.0 = 12.0) -> 42.0.
         // This ensures the PTY row count exactly matches the visible lines in UI,
@@ -1340,13 +1426,7 @@ impl AppState {
         }
     }
 
-    pub fn update_hover(
-        &mut self,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    ) -> (bool, CursorIcon) {
+    pub fn update_hover(&mut self, x: f64, y: f64, w: f64, h: f64) -> (bool, CursorIcon) {
         let old_hover = self.hover;
         let mut new_hover = HoverTarget::None;
         let mut cursor = CursorIcon::Default;
@@ -1384,7 +1464,11 @@ impl AppState {
                 cursor = CursorIcon::Default;
 
                 let fp_y = modal_y + 110.0;
-                if y >= fp_y && y <= fp_y + 34.0 && x >= modal_x + modal_w - 110.0 && x <= modal_x + modal_w - 24.0 {
+                if y >= fp_y
+                    && y <= fp_y + 34.0
+                    && x >= modal_x + modal_w - 110.0
+                    && x <= modal_x + modal_w - 24.0
+                {
                     new_hover = HoverTarget::HostKeyModalCopy;
                     cursor = CursorIcon::Pointer;
                 }
@@ -1425,7 +1509,8 @@ impl AppState {
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
-                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h
+                {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
                     let btn_y = modal_y + modal_h - 52.0;
@@ -1454,7 +1539,8 @@ impl AppState {
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
-                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h
+                {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
                     let btn_y = modal_y + modal_h - 52.0;
@@ -1480,7 +1566,11 @@ impl AppState {
             if confirm_run.is_open {
                 let layout = confirm_run.layout(w, h);
 
-                if x >= layout.modal_x && x <= layout.modal_x + layout.modal_w && y >= layout.modal_y && y <= layout.modal_y + layout.modal_h {
+                if x >= layout.modal_x
+                    && x <= layout.modal_x + layout.modal_w
+                    && y >= layout.modal_y
+                    && y <= layout.modal_y + layout.modal_h
+                {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
 
@@ -1492,7 +1582,11 @@ impl AppState {
                         cursor = CursorIcon::Pointer;
                     } else if layout.exec_contains(x, y) {
                         new_hover = HoverTarget::ConfirmRunExecute;
-                        cursor = if confirm_run.can_execute { CursorIcon::Pointer } else { CursorIcon::NotAllowed };
+                        cursor = if confirm_run.can_execute {
+                            CursorIcon::Pointer
+                        } else {
+                            CursorIcon::NotAllowed
+                        };
                     }
 
                     let changed = old_hover != new_hover;
@@ -1510,12 +1604,17 @@ impl AppState {
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
-                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h
+                {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
 
                     // Close button
-                    if x >= modal_x + modal_w - 38.0 && x <= modal_x + modal_w - 14.0 && y >= modal_y + 14.0 && y <= modal_y + 38.0 {
+                    if x >= modal_x + modal_w - 38.0
+                        && x <= modal_x + modal_w - 14.0
+                        && y >= modal_y + 14.0
+                        && y <= modal_y + 38.0
+                    {
                         new_hover = HoverTarget::SettingsClose;
                         cursor = CursorIcon::Pointer;
                     }
@@ -1566,18 +1665,27 @@ impl AppState {
                             }
                             SettingsTab::Security => {
                                 let f_y_base = modal_y + 155.0;
-                                let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
+                                let has_existing =
+                                    self.hosts_doc.settings.master_password_hash.is_some();
                                 let start_field = if has_existing { 0 } else { 1 };
                                 let end_field = 3;
 
                                 let mut cy = f_y_base;
                                 for f_idx in start_field..end_field {
                                     let inp_w = modal_w - 220.0 - 42.0;
-                                    if x >= modal_x + 190.0 && x <= modal_x + 190.0 + inp_w && y >= cy && y <= cy + 32.0 {
+                                    if x >= modal_x + 190.0
+                                        && x <= modal_x + 190.0 + inp_w
+                                        && y >= cy
+                                        && y <= cy + 32.0
+                                    {
                                         new_hover = HoverTarget::SettingsSecurityField(f_idx);
                                         cursor = CursorIcon::Text;
                                         break;
-                                    } else if x >= modal_x + 190.0 + inp_w + 8.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                    } else if x >= modal_x + 190.0 + inp_w + 8.0
+                                        && x <= modal_x + modal_w - 30.0
+                                        && y >= cy
+                                        && y <= cy + 32.0
+                                    {
                                         new_hover = HoverTarget::SettingsTogglePassword;
                                         cursor = CursorIcon::Pointer;
                                         break;
@@ -1589,15 +1697,21 @@ impl AppState {
                                     let btn_y = modal_y + modal_h - 52.0;
                                     if y >= btn_y && y <= btn_y + 34.0 {
                                         if has_existing {
-                                            if x >= modal_x + modal_w - 320.0 && x <= modal_x + modal_w - 170.0 {
+                                            if x >= modal_x + modal_w - 320.0
+                                                && x <= modal_x + modal_w - 170.0
+                                            {
                                                 new_hover = HoverTarget::SettingsRemovePassword;
                                                 cursor = CursorIcon::Pointer;
-                                            } else if x >= modal_x + modal_w - 160.0 && x <= modal_x + modal_w - 24.0 {
+                                            } else if x >= modal_x + modal_w - 160.0
+                                                && x <= modal_x + modal_w - 24.0
+                                            {
                                                 new_hover = HoverTarget::SettingsSavePassword;
                                                 cursor = CursorIcon::Pointer;
                                             }
                                         } else {
-                                            if x >= modal_x + modal_w - 180.0 && x <= modal_x + modal_w - 24.0 {
+                                            if x >= modal_x + modal_w - 180.0
+                                                && x <= modal_x + modal_w - 24.0
+                                            {
                                                 new_hover = HoverTarget::SettingsSavePassword;
                                                 cursor = CursorIcon::Pointer;
                                             }
@@ -1606,12 +1720,31 @@ impl AppState {
                                 }
                             }
                             SettingsTab::Backup => {
+                                for index in 0..2 {
+                                    let cy = modal_y + 330.0 + index as f64 * 40.0;
+                                    if x >= modal_x + 200.0
+                                        && x <= modal_x + modal_w - 30.0
+                                        && y >= cy
+                                        && y <= cy + 32.0
+                                    {
+                                        new_hover = HoverTarget::SettingsBackupField(index);
+                                        cursor = CursorIcon::Text;
+                                    }
+                                }
                                 let exp_y = modal_y + 164.0;
                                 let imp_y = modal_y + 274.0;
-                                if x >= modal_x + 38.0 && x <= modal_x + 238.0 && y >= exp_y && y <= exp_y + 30.0 {
+                                if x >= modal_x + 38.0
+                                    && x <= modal_x + 238.0
+                                    && y >= exp_y
+                                    && y <= exp_y + 30.0
+                                {
                                     new_hover = HoverTarget::SettingsExportJson;
                                     cursor = CursorIcon::Pointer;
-                                } else if x >= modal_x + 38.0 && x <= modal_x + 238.0 && y >= imp_y && y <= imp_y + 30.0 {
+                                } else if x >= modal_x + 38.0
+                                    && x <= modal_x + 238.0
+                                    && y >= imp_y
+                                    && y <= imp_y + 30.0
+                                {
                                     new_hover = HoverTarget::SettingsImportJson;
                                     cursor = CursorIcon::Pointer;
                                 }
@@ -1620,17 +1753,25 @@ impl AppState {
                                 let lang_y = modal_y + 105.0;
                                 if y >= lang_y && y <= lang_y + 30.0 {
                                     if x >= modal_x + 240.0 && x <= modal_x + 340.0 {
-                                        new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::Ru);
+                                        new_hover = HoverTarget::SettingsSetLanguage(
+                                            crate::config::AppLanguage::Ru,
+                                        );
                                         cursor = CursorIcon::Pointer;
                                     } else if x >= modal_x + 350.0 && x <= modal_x + 450.0 {
-                                        new_hover = HoverTarget::SettingsSetLanguage(crate::config::AppLanguage::En);
+                                        new_hover = HoverTarget::SettingsSetLanguage(
+                                            crate::config::AppLanguage::En,
+                                        );
                                         cursor = CursorIcon::Pointer;
                                     }
                                 }
 
                                 let mut cy = modal_y + 150.0;
                                 for f_idx in 0..2 {
-                                    if x >= modal_x + 240.0 && x <= modal_x + modal_w - 30.0 && y >= cy && y <= cy + 32.0 {
+                                    if x >= modal_x + 240.0
+                                        && x <= modal_x + modal_w - 30.0
+                                        && y >= cy
+                                        && y <= cy + 32.0
+                                    {
                                         new_hover = HoverTarget::SettingsGeneralField(f_idx);
                                         cursor = CursorIcon::Text;
                                         break;
@@ -1638,13 +1779,29 @@ impl AppState {
                                     cy += 45.0;
                                 }
                                 if new_hover == HoverTarget::ModalDialogBody {
+                                    if x >= modal_x + 24.0
+                                        && x <= modal_x + modal_w - 24.0
+                                        && y >= modal_y + 282.0
+                                        && y <= modal_y + 310.0
+                                    {
+                                        new_hover = HoverTarget::SettingsToggleHistory;
+                                        cursor = CursorIcon::Pointer;
+                                    }
                                     // Checkbox confirm delete
-                                    if x >= modal_x + 24.0 && x <= modal_x + 420.0 && y >= cy && y <= cy + 28.0 {
+                                    if x >= modal_x + 24.0
+                                        && x <= modal_x + 420.0
+                                        && y >= cy
+                                        && y <= cy + 28.0
+                                    {
                                         new_hover = HoverTarget::SettingsToggleConfirmDelete;
                                         cursor = CursorIcon::Pointer;
                                     }
                                     let btn_y = modal_y + modal_h - 52.0;
-                                    if x >= modal_x + modal_w - 190.0 && x <= modal_x + modal_w - 24.0 && y >= btn_y && y <= btn_y + 34.0 {
+                                    if x >= modal_x + modal_w - 190.0
+                                        && x <= modal_x + modal_w - 24.0
+                                        && y >= btn_y
+                                        && y <= btn_y + 34.0
+                                    {
                                         new_hover = HoverTarget::SettingsSaveGeneral;
                                         cursor = CursorIcon::Pointer;
                                     }
@@ -1714,7 +1871,8 @@ impl AppState {
                 let modal_x = (w - modal_w) / 2.0;
                 let modal_y = (h - modal_h) / 2.0;
 
-                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h {
+                if x >= modal_x && x <= modal_x + modal_w && y >= modal_y && y <= modal_y + modal_h
+                {
                     new_hover = HoverTarget::ModalDialogBody;
                     cursor = CursorIcon::Default;
 
@@ -1738,7 +1896,9 @@ impl AppState {
                                     new_hover = HoverTarget::SessionDashboardRunCmd(cmd_idx);
                                     cursor = CursorIcon::Pointer;
                                     break;
-                                } else if x >= modal_x + modal_w - 96.0 && x < modal_x + modal_w - 60.0 {
+                                } else if x >= modal_x + modal_w - 96.0
+                                    && x < modal_x + modal_w - 60.0
+                                {
                                     new_hover = HoverTarget::SessionDashboardCopyCmd(cmd_idx);
                                     cursor = CursorIcon::Pointer;
                                     break;
@@ -1770,7 +1930,11 @@ impl AppState {
                 } else {
                     let mut f_y = modal_y + 55.0;
                     for idx in 0..4 {
-                        if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 52.0 {
+                        if x >= modal_x + 24.0
+                            && x <= modal_x + modal_w - 24.0
+                            && y >= f_y
+                            && y <= f_y + 52.0
+                        {
                             new_hover = HoverTarget::ModalSnippetField(idx);
                             cursor = CursorIcon::Text;
                             break;
@@ -1823,7 +1987,11 @@ impl AppState {
 
                     let mut f_y = modal_y + 92.0;
                     for idx in 0..3 {
-                        if x >= modal_x + 160.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                        if x >= modal_x + 160.0
+                            && x <= modal_x + modal_w - 24.0
+                            && y >= f_y
+                            && y <= f_y + 32.0
+                        {
                             new_hover = HoverTarget::KeyToolField(idx);
                             cursor = CursorIcon::Text;
                         }
@@ -1831,7 +1999,11 @@ impl AppState {
                     }
 
                     let gen_y = modal_y + 210.0;
-                    if x >= modal_x + 160.0 && x <= modal_x + modal_w - 24.0 && y >= gen_y && y <= gen_y + 34.0 {
+                    if x >= modal_x + 160.0
+                        && x <= modal_x + modal_w - 24.0
+                        && y >= gen_y
+                        && y <= gen_y + 34.0
+                    {
                         new_hover = HoverTarget::KeyToolGenerateBtn;
                         cursor = CursorIcon::Pointer;
                     }
@@ -1884,7 +2056,11 @@ impl AppState {
                     // Fields
                     let mut f_y = modal_y + 60.0;
                     for idx in 0..5 {
-                        if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                        if x >= modal_x + 24.0
+                            && x <= modal_x + modal_w - 24.0
+                            && y >= f_y
+                            && y <= f_y + 32.0
+                        {
                             new_hover = HoverTarget::ModalField(idx);
                             cursor = CursorIcon::Text;
                         }
@@ -1893,7 +2069,11 @@ impl AppState {
 
                     // Auth buttons
                     let mut btn_x = modal_x + 160.0;
-                    let modes = [AuthModeChoice::Agent, AuthModeChoice::Key, AuthModeChoice::Password];
+                    let modes = [
+                        AuthModeChoice::Agent,
+                        AuthModeChoice::Key,
+                        AuthModeChoice::Password,
+                    ];
                     for mode in modes {
                         if x >= btn_x && x <= btn_x + 90.0 && y >= f_y && y <= f_y + 28.0 {
                             new_hover = HoverTarget::ModalAuthMode(mode);
@@ -1907,26 +2087,50 @@ impl AppState {
                     if self.add_host_modal.auth_mode != AuthModeChoice::Agent {
                         if self.add_host_modal.auth_mode == AuthModeChoice::Key {
                             let input_w = modal_w - 160.0 - 180.0;
-                            if x >= modal_x + 24.0 && x <= modal_x + 160.0 + input_w && y >= f_y && y <= f_y + 32.0 {
+                            if x >= modal_x + 24.0
+                                && x <= modal_x + 160.0 + input_w
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
-                            } else if x >= modal_x + modal_w - 170.0 && x <= modal_x + modal_w - 96.0 && y >= f_y && y <= f_y + 32.0 {
+                            } else if x >= modal_x + modal_w - 170.0
+                                && x <= modal_x + modal_w - 96.0
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalBrowseKey;
                                 cursor = CursorIcon::Pointer;
-                            } else if x >= modal_x + modal_w - 90.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                            } else if x >= modal_x + modal_w - 90.0
+                                && x <= modal_x + modal_w - 24.0
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalGenerateKey;
                                 cursor = CursorIcon::Pointer;
                             }
                         } else {
                             let eye_btn_w = 34.0;
                             let inp_w = modal_w - 184.0 - eye_btn_w - 8.0;
-                            if x >= modal_x + 160.0 && x <= modal_x + 160.0 + inp_w && y >= f_y && y <= f_y + 32.0 {
+                            if x >= modal_x + 160.0
+                                && x <= modal_x + 160.0 + inp_w
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
-                            } else if x >= modal_x + 160.0 + inp_w + 8.0 && x <= modal_x + 160.0 + inp_w + 8.0 + eye_btn_w && y >= f_y && y <= f_y + 32.0 {
+                            } else if x >= modal_x + 160.0 + inp_w + 8.0
+                                && x <= modal_x + 160.0 + inp_w + 8.0 + eye_btn_w
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalTogglePassword;
                                 cursor = CursorIcon::Pointer;
-                            } else if x >= modal_x + 24.0 && x <= modal_x + modal_w - 24.0 && y >= f_y && y <= f_y + 32.0 {
+                            } else if x >= modal_x + 24.0
+                                && x <= modal_x + modal_w - 24.0
+                                && y >= f_y
+                                && y <= f_y + 32.0
+                            {
                                 new_hover = HoverTarget::ModalField(5);
                                 cursor = CursorIcon::Text;
                             }
@@ -1936,12 +2140,14 @@ impl AppState {
                     // Save / Connect buttons
                     let save_btn_x = modal_x + modal_w - 280.0;
                     let btn_y = modal_y + modal_h - 48.0;
-                    if x >= save_btn_x && x <= save_btn_x + 120.0 && y >= btn_y && y <= btn_y + 34.0 {
+                    if x >= save_btn_x && x <= save_btn_x + 120.0 && y >= btn_y && y <= btn_y + 34.0
+                    {
                         new_hover = HoverTarget::ModalSave;
                         cursor = CursorIcon::Pointer;
                     }
                     let conn_btn_x = modal_x + modal_w - 146.0;
-                    if x >= conn_btn_x && x <= conn_btn_x + 126.0 && y >= btn_y && y <= btn_y + 34.0 {
+                    if x >= conn_btn_x && x <= conn_btn_x + 126.0 && y >= btn_y && y <= btn_y + 34.0
+                    {
                         new_hover = HoverTarget::ModalConnect;
                         cursor = CursorIcon::Pointer;
                     }
@@ -1999,7 +2205,8 @@ impl AppState {
                 let add_btn_w = if compact_add { 32.0 } else { 110.0 };
                 let max_tabs_w = (search_btn_x - 10.0 - tab_start_x - add_btn_w - 6.0).max(60.0);
                 let num_tabs = self.tabs.len().max(1);
-                let tab_w = ((max_tabs_w - (num_tabs - 1) as f64 * 6.0) / num_tabs as f64).clamp(60.0, 175.0);
+                let tab_w = ((max_tabs_w - (num_tabs - 1) as f64 * 6.0) / num_tabs as f64)
+                    .clamp(60.0, 175.0);
 
                 let mut tab_x = tab_start_x;
                 for (i, _) in self.tabs.iter().enumerate() {
@@ -2019,7 +2226,10 @@ impl AppState {
                 }
 
                 if new_hover == HoverTarget::None {
-                    if tab_x + add_btn_w <= search_btn_x - 4.0 && x >= tab_x && x <= tab_x + add_btn_w {
+                    if tab_x + add_btn_w <= search_btn_x - 4.0
+                        && x >= tab_x
+                        && x <= tab_x + add_btn_w
+                    {
                         new_hover = HoverTarget::HeaderAddBtn;
                         cursor = CursorIcon::Pointer;
                     } else if x >= search_btn_x && x <= search_btn_x + search_btn_w {
@@ -2083,11 +2293,14 @@ impl AppState {
                                         if card_y >= 14.0 && card_y <= 42.0 {
                                             if x >= sidebar_w - 34.0 && x <= sidebar_w - 10.0 {
                                                 new_hover = HoverTarget::HostDelete(real_idx);
-                                            } else if x >= sidebar_w - 62.0 && x < sidebar_w - 34.0 {
+                                            } else if x >= sidebar_w - 62.0 && x < sidebar_w - 34.0
+                                            {
                                                 new_hover = HoverTarget::HostEdit(real_idx);
-                                            } else if x >= sidebar_w - 90.0 && x < sidebar_w - 62.0 {
+                                            } else if x >= sidebar_w - 90.0 && x < sidebar_w - 62.0
+                                            {
                                                 new_hover = HoverTarget::HostDeployKey(real_idx);
-                                            } else if x >= sidebar_w - 118.0 && x < sidebar_w - 90.0 {
+                                            } else if x >= sidebar_w - 118.0 && x < sidebar_w - 90.0
+                                            {
                                                 new_hover = HoverTarget::HostConnect(real_idx);
                                             } else {
                                                 new_hover = HoverTarget::HostCard(real_idx);
@@ -2138,11 +2351,14 @@ impl AppState {
                                         if card_y >= 14.0 && card_y <= 42.0 {
                                             if x >= sidebar_w - 34.0 && x <= sidebar_w - 10.0 {
                                                 new_hover = HoverTarget::SnippetDelete(item_idx);
-                                            } else if x >= sidebar_w - 62.0 && x < sidebar_w - 34.0 {
+                                            } else if x >= sidebar_w - 62.0 && x < sidebar_w - 34.0
+                                            {
                                                 new_hover = HoverTarget::SnippetEdit(item_idx);
-                                            } else if x >= sidebar_w - 90.0 && x < sidebar_w - 62.0 {
+                                            } else if x >= sidebar_w - 90.0 && x < sidebar_w - 62.0
+                                            {
                                                 new_hover = HoverTarget::SnippetCopy(item_idx);
-                                            } else if x >= sidebar_w - 118.0 && x < sidebar_w - 90.0 {
+                                            } else if x >= sidebar_w - 118.0 && x < sidebar_w - 90.0
+                                            {
                                                 new_hover = HoverTarget::SnippetRun(item_idx);
                                             } else {
                                                 new_hover = HoverTarget::SnippetItem(item_idx);
@@ -2170,10 +2386,18 @@ impl AppState {
             let center_y = header_h + (h - header_h - self.footer_height) / 2.0 - 140.0;
             let title_y = center_y + 84.0;
 
-            if x >= center_x + 90.0 && x <= center_x + 250.0 && y >= title_y + 36.0 && y <= title_y + 72.0 {
+            if x >= center_x + 90.0
+                && x <= center_x + 250.0
+                && y >= title_y + 36.0
+                && y <= title_y + 72.0
+            {
                 new_hover = HoverTarget::WelcomeAdd;
                 cursor = CursorIcon::Pointer;
-            } else if x >= center_x + 260.0 && x <= center_x + 410.0 && y >= title_y + 36.0 && y <= title_y + 72.0 {
+            } else if x >= center_x + 260.0
+                && x <= center_x + 410.0
+                && y >= title_y + 36.0
+                && y <= title_y + 72.0
+            {
                 new_hover = HoverTarget::WelcomeConnect;
                 cursor = CursorIcon::Pointer;
             }
@@ -2304,7 +2528,11 @@ impl AppState {
                             }
                         }
 
-                        let right_reserved = if is_active && pw >= 320.0 { 180.0 } else { 12.0 };
+                        let right_reserved = if is_active && pw >= 320.0 {
+                            180.0
+                        } else {
+                            12.0
+                        };
                         let mut pill_x = px_start + 8.0;
                         let pills = [
                             (QuickActionCmd::Htop, 78.0),
@@ -2341,18 +2569,28 @@ impl AppState {
                     let bar_h = if tab.handle.is_some() { 30.0 } else { 0.0 };
                     let sb_y = header_h + bar_h + 6.0;
                     let banner_h = if tab.handle.is_none() { 46.0 } else { 0.0 };
-                    let sb_h = (h - header_h - self.footer_height - bar_h - banner_h - 12.0).max(20.0);
+                    let sb_h =
+                        (h - header_h - self.footer_height - bar_h - banner_h - 12.0).max(10.0);
 
                     let scrollback_len = tab.terminal.scrollback_len();
                     let scroll_offset = tab.terminal.scroll_offset();
                     let rows = tab.terminal.rows();
 
-                    let (thumb_y, thumb_h) = if scrollback_len > 0 {
+                    let (thumb_y, thumb_h) = if scrollback_len > 0 && sb_h > 0.0 {
                         let total_lines = scrollback_len + rows;
-                        let visible_ratio = (rows as f64) / (total_lines as f64);
-                        let th = (sb_h * visible_ratio).clamp(24.0, sb_h);
+                        let visible_ratio = if total_lines > 0 {
+                            (rows as f64) / (total_lines as f64)
+                        } else {
+                            1.0
+                        };
+                        let min_th = 14.0f64.min(sb_h);
+                        let th = (sb_h * visible_ratio).max(min_th).min(sb_h);
                         let max_scroll_offset = scrollback_len as f64;
-                        let scroll_ratio = (scroll_offset as f64) / max_scroll_offset;
+                        let scroll_ratio = if max_scroll_offset > 0.0 {
+                            (scroll_offset as f64) / max_scroll_offset
+                        } else {
+                            0.0
+                        };
                         let ty = sb_y + (sb_h - th) * (1.0 - scroll_ratio);
                         (ty, th)
                     } else {
@@ -2461,7 +2699,9 @@ impl AppState {
         }
         let tab = self.tabs.get(self.active_tab)?;
         let (p1, p2) = sel.normalized();
-        let text = tab.terminal.get_text_range((p1.col, p1.row), (p2.col, p2.row));
+        let text = tab
+            .terminal
+            .get_text_range((p1.col, p1.row), (p2.col, p2.row));
         if text.trim().is_empty() {
             None
         } else {
@@ -2495,10 +2735,14 @@ impl AppState {
 
     pub fn is_modal_open(&self) -> bool {
         self.is_app_locked
+            || self.host_key_modal.is_some()
             || self.add_host_modal.is_open
             || self.key_tool_modal.is_open
             || self.add_snippet_modal.is_open
-            || self.session_dashboard_modal.as_ref().map_or(false, |m| m.is_open)
+            || self
+                .session_dashboard_modal
+                .as_ref()
+                .map_or(false, |m| m.is_open)
             || self.confirm_delete_modal.is_some()
             || self.confirm_delete_snippet_modal.is_some()
             || self.confirm_run_modal.is_some()
@@ -2661,13 +2905,20 @@ impl AppState {
             return Some(InputFieldId::KeyTool(self.key_tool_modal.active_field));
         }
         if self.add_snippet_modal.is_open {
-            return Some(InputFieldId::AddSnippet(self.add_snippet_modal.active_field));
+            return Some(InputFieldId::AddSnippet(
+                self.add_snippet_modal.active_field,
+            ));
         }
         if let Some(m) = &self.settings_modal {
             if m.is_open {
                 return match m.active_tab {
-                    SettingsTab::General => Some(InputFieldId::SettingsGeneral(m.active_general_field)),
-                    SettingsTab::Security => Some(InputFieldId::SettingsSecurity(m.active_security_field)),
+                    SettingsTab::General => {
+                        Some(InputFieldId::SettingsGeneral(m.active_general_field))
+                    }
+                    SettingsTab::Security => {
+                        Some(InputFieldId::SettingsSecurity(m.active_security_field))
+                    }
+                    SettingsTab::Backup => self.focused_input,
                     _ => None,
                 };
             }
@@ -2693,7 +2944,7 @@ impl AppState {
                             self.update_terminal_search();
                         }
                     } else {
-                        self.send_to_active_terminal(&text);
+                        self.paste_to_active_terminal(&text);
                     }
                 }
             }
@@ -2875,15 +3126,40 @@ impl AppState {
 
     pub fn poll_events(&mut self) -> bool {
         let mut updated = false;
-        while let Ok(event) = self.event_rx.try_recv() {
+        let mut history_changed = false;
+        let mut history_error = None;
+        let started = std::time::Instant::now();
+        for _ in 0..64 {
+            if started.elapsed() >= std::time::Duration::from_millis(4) {
+                break;
+            }
+            let Ok(event) = self.event_rx.try_recv() else {
+                break;
+            };
             updated = true;
             match event {
                 AppEvent::SshOutput { session_id, data } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == session_id) {
                         tab.terminal.write_bytes(&data);
+                        let commands = tab.terminal.take_executed_commands();
+                        if self.hosts_doc.settings.record_command_history {
+                            for command in commands {
+                                match self.db.record_command(
+                                    Some(&tab.id),
+                                    &tab.host_address,
+                                    &command,
+                                ) {
+                                    Ok(_) => history_changed = true,
+                                    Err(e) => {
+                                        history_error = Some(format!("Cannot record command: {e}"))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 AppEvent::SshConnected { session_id, handle } => {
+                    self.pending_connections.remove(&session_id);
                     let c = self.terminal_cols as u32;
                     let r = self.terminal_rows as u32;
                     let r_tx = handle.resize_tx.clone();
@@ -2891,13 +3167,17 @@ impl AppState {
                         let _ = r_tx.send((c, r)).await;
                     });
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == session_id) {
-                        tab.status = "🟢 Connected".into();
-                        tab.handle = Some(handle);
+                        if *handle.is_connected.read() {
+                            tab.status = "🟢 Connected".into();
+                            tab.handle = Some(handle);
+                        }
                     }
                     self.refresh_recent_sessions();
                 }
                 AppEvent::SshDisconnected { session_id, error } => {
+                    self.pending_connections.remove(&session_id);
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == session_id) {
+                        tab.handle = None;
                         match error {
                             Some(ref err) => {
                                 tab.status = format!("🔴 Ошибка: {err}");
@@ -2908,10 +3188,17 @@ impl AppState {
                             }
                             None => {
                                 tab.status = "⚪ Отключено".into();
-                                tab.terminal.write_bytes("\r\n\x1b[38;2;148;163;184m[Сессия завершена]\x1b[0m\r\n".as_bytes());
+                                tab.terminal.write_bytes(
+                                    "\r\n\x1b[38;2;148;163;184m[Сессия завершена]\x1b[0m\r\n"
+                                        .as_bytes(),
+                                );
                             }
                         }
-                        let _ = self.db.record_session_end(&session_id, "closed", error.as_deref());
+                        let _ = self.db.record_session_end(
+                            &session_id,
+                            if error.is_some() { "error" } else { "closed" },
+                            error.as_deref(),
+                        );
                     }
                     self.refresh_recent_sessions();
                 }
@@ -2925,7 +3212,7 @@ impl AppState {
                     old_line,
                     response_tx,
                 } => {
-                    self.host_key_modal = Some(HostKeyPromptModal {
+                    self.pending_host_keys.push_back(HostKeyPromptModal {
                         session_id,
                         host,
                         port,
@@ -2939,624 +3226,41 @@ impl AppState {
                 }
             }
         }
+        self.advance_host_key_prompt();
+        if history_changed {
+            self.refresh_command_search();
+        }
+        if let Some(error) = history_error {
+            self.show_error(&error);
+        }
         updated
     }
 
-    pub fn open_add_host_dialog(&mut self) {
-        self.add_host_modal = AddHostModal {
-            is_open: true,
-            is_editing: false,
-            editing_id: None,
-            name: TextInput::default(),
-            hostname: TextInput::default(),
-            port: TextInput::new("22"),
-            username: TextInput::new("root"),
-            group: TextInput::new("Production"),
-            auth_mode: AuthModeChoice::Agent,
-            key_path: TextInput::new("~/.ssh/id_ed25519"),
-            password: TextInput::default(),
-            show_password: false,
-            badge_color: "#2dd4bf".into(),
-            active_field: 0,
-            error_msg: None,
-        };
-        self.caret_visible = true;
-        self.caret_blink_time = std::time::Instant::now();
-    }
-
-    pub fn open_edit_host_dialog(&mut self, host_idx: usize) {
-        if let Some(host) = self.hosts_doc.hosts.get(host_idx) {
-            let (auth_mode, key_path, password) = match &host.auth {
-                AuthConfig::Agent => (AuthModeChoice::Agent, "~/.ssh/id_ed25519".into(), String::new()),
-                AuthConfig::Key { path, .. } => (
-                    AuthModeChoice::Key,
-                    path.to_string_lossy().to_string(),
-                    String::new(),
-                ),
-                AuthConfig::Password { password } => (
-                    AuthModeChoice::Password,
-                    String::new(),
-                    password.clone().unwrap_or_default(),
-                ),
-            };
-
-            self.add_host_modal = AddHostModal {
-                is_open: true,
-                is_editing: true,
-                editing_id: Some(host.id.clone()),
-                name: TextInput::new(&host.name),
-                hostname: TextInput::new(&host.hostname),
-                port: TextInput::new(host.port.to_string()),
-                username: TextInput::new(&host.username),
-                group: TextInput::new(host.group.clone().unwrap_or_else(|| "General".into())),
-                auth_mode,
-                key_path: TextInput::new(key_path),
-                password: TextInput::new(password),
-                show_password: false,
-                badge_color: host.badge_color.clone().unwrap_or_else(|| "#2dd4bf".into()),
-                active_field: 0,
-                error_msg: None,
-            };
-            self.caret_visible = true;
-            self.caret_blink_time = std::time::Instant::now();
-        }
-    }
-
-    pub fn save_host_from_modal(&mut self, connect_immediately: bool) -> bool {
-        let name = self.add_host_modal.name.text.trim().to_string();
-        let hostname = self.add_host_modal.hostname.text.trim().to_string();
-
-        if name.is_empty() {
-            self.add_host_modal.error_msg = Some("Укажите имя сервера".into());
-            return false;
-        }
-        if hostname.is_empty() {
-            self.add_host_modal.error_msg = Some("Укажите адрес хоста/IP".into());
-            return false;
-        }
-
-        let port: u16 = self.add_host_modal.port.text.trim().parse().unwrap_or(22);
-        let username = if self.add_host_modal.username.text.trim().is_empty() {
-            "root".to_string()
-        } else {
-            self.add_host_modal.username.text.trim().to_string()
-        };
-
-        let auth = match self.add_host_modal.auth_mode {
-            AuthModeChoice::Agent => AuthConfig::Agent,
-            AuthModeChoice::Key => {
-                let kp = self.add_host_modal.key_path.text.trim();
-                let p = if kp.starts_with("~/") {
-                    if let Some(h) = dirs::home_dir() {
-                        h.join(&kp[2..])
-                    } else {
-                        PathBuf::from(kp)
-                    }
-                } else {
-                    PathBuf::from(kp)
-                };
-                AuthConfig::Key {
-                    path: p,
-                    passphrase: None,
-                }
-            }
-            AuthModeChoice::Password => AuthConfig::Password {
-                password: Some(self.add_host_modal.password.text.clone()),
-            },
-        };
-
-        let id = self
-            .add_host_modal
-            .editing_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        let new_host = HostConfig {
-            id: id.clone(),
-            name,
-            hostname,
-            port,
-            username,
-            group: Some(self.add_host_modal.group.text.trim().to_string()),
-            tags: vec![],
-            badge_color: Some(self.add_host_modal.badge_color.clone()),
-            auth,
-            default_command: None,
-            env: HashMap::new(),
-        };
-
-        if self.add_host_modal.is_editing {
-            if let Some(idx) = self.hosts_doc.hosts.iter().position(|h| h.id == id) {
-                self.hosts_doc.hosts[idx] = new_host.clone();
-            }
-        } else {
-            self.hosts_doc.hosts.push(new_host.clone());
-        }
-
-        let _ = save_hosts(&self.hosts_doc);
-        self.add_host_modal.is_open = false;
-
-        if connect_immediately {
-            self.connect_to_host(new_host);
-        }
-
-        true
-    }
-
-    pub fn accept_host_key(&mut self) {
-        if let Some(mut modal) = self.host_key_modal.take() {
-            if let Some(tx) = modal.response_tx.take() {
-                let _ = tx.send(true);
-            }
-        }
-    }
-
-    pub fn reject_host_key(&mut self) {
-        if let Some(mut modal) = self.host_key_modal.take() {
-            if let Some(tx) = modal.response_tx.take() {
-                let _ = tx.send(false);
-            }
-        }
-    }
-
-    pub fn open_confirm_delete_host(&mut self, host_idx: usize) {
-        if !self.hosts_doc.settings.confirm_delete {
-            self.delete_host(host_idx);
+    pub fn paste_to_active_terminal(&mut self, text: &str) {
+        if self.is_modal_open() {
             return;
         }
-        if let Some(h) = self.hosts_doc.hosts.get(host_idx) {
-            self.confirm_delete_modal = Some(ConfirmDeleteHostModal {
-                is_open: true,
-                host_idx,
-                host_name: h.name.clone(),
-                host_address: format!("{}@{}:{}", h.username, h.hostname, h.port),
-            });
-        }
-    }
-
-    pub fn execute_confirm_delete_host(&mut self) {
-        if let Some(m) = self.confirm_delete_modal.take() {
-            self.delete_host(m.host_idx);
-        }
-    }
-
-    pub fn open_confirm_run_modal(&mut self, command: String, source_title: String) {
-        let (is_dangerous, danger_reason) = check_dangerous_command(&command);
-        let (target_tab_title, can_execute) = if let Some(tab) = self.tabs.get(self.active_tab) {
-            let is_connected = tab.handle.as_ref().map_or(false, |h| *h.is_connected.read());
-            if is_connected {
-                (format!("{} ({})", tab.title, tab.host_address), true)
-            } else {
-                (format!("{} (отключен)", tab.title), false)
-            }
-        } else {
-            ("Нет активных сессий терминала".into(), false)
-        };
-
-        self.confirm_run_modal = Some(ConfirmRunCommandModal {
-            is_open: true,
-            command,
-            source_title,
-            is_dangerous,
-            danger_reason,
-            target_tab_title,
-            can_execute,
-            copied_feedback: false,
-        });
-    }
-
-    pub fn execute_confirm_run_command(&mut self) {
-        if let Some(m) = self.confirm_run_modal.take() {
-            if m.can_execute {
-                let to_send = format!("{}\r", m.command);
-                self.send_to_active_terminal(&to_send);
-            }
-        }
-    }
-
-    pub fn delete_host(&mut self, host_idx: usize) {
-        if host_idx < self.hosts_doc.hosts.len() {
-            self.hosts_doc.hosts.remove(host_idx);
-            let _ = save_hosts(&self.hosts_doc);
-        }
-    }
-
-    pub fn open_settings_modal(&mut self) {
-        let default_user = self.hosts_doc.settings.default_user.clone();
-        let scrollback = self.hosts_doc.settings.scrollback_lines.to_string();
-        let confirm_delete = self.hosts_doc.settings.confirm_delete;
-        let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
-        let init_sec_field = if has_existing { 0 } else { 1 };
-        self.settings_modal = Some(SettingsModal {
-            is_open: true,
-            active_tab: SettingsTab::About,
-            current_password: TextInput::default(),
-            new_password: TextInput::default(),
-            confirm_password: TextInput::default(),
-            active_security_field: init_sec_field,
-            security_msg: None,
-            backup_msg: None,
-            default_user: TextInput::new(default_user),
-            scrollback_lines: TextInput::new(scrollback),
-            confirm_delete,
-            active_general_field: 0,
-            general_msg: None,
-            show_passwords: false,
-        });
-        self.focused_input = None;
-    }
-
-    pub fn toggle_language(&mut self) {
-        let new_lang = self.hosts_doc.settings.language.toggle();
-        self.hosts_doc.settings.language = new_lang;
-        let _ = save_hosts(&self.hosts_doc);
-    }
-
-    pub fn set_language(&mut self, lang: crate::config::AppLanguage) {
-        self.hosts_doc.settings.language = lang;
-        let _ = save_hosts(&self.hosts_doc);
-    }
-
-    pub fn save_master_password(&mut self) {
-        let Some(modal) = &mut self.settings_modal else { return; };
-        let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
-        if has_existing {
-            let current = modal.current_password.text.trim();
-            if let Some(existing_hash) = &self.hosts_doc.settings.master_password_hash {
-                if !verify_password(current, existing_hash) {
-                    modal.security_msg = Some(("Текущий пароль введен неверно".to_string(), true));
-                    return;
-                }
-            }
-        }
-
-        let new_pass = modal.new_password.text.trim();
-        let confirm_pass = modal.confirm_password.text.trim();
-        if new_pass.is_empty() {
-            modal.security_msg = Some(("Новый пароль не может быть пустым".to_string(), true));
+        if text.len() > 1024 * 1024 {
+            self.show_error("Paste exceeds 1 MiB");
             return;
         }
-        if new_pass != confirm_pass {
-            modal.security_msg = Some(("Пароли не совпадают".to_string(), true));
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        if tab.handle.is_none() {
             return;
         }
-        if new_pass.len() < 4 {
-            modal.security_msg = Some(("Пароль должен содержать минимум 4 символа".to_string(), true));
-            return;
-        }
-
-        self.hosts_doc.settings.master_password_hash = Some(hash_password(new_pass));
-        let _ = save_hosts(&self.hosts_doc);
-        modal.current_password = TextInput::default();
-        modal.new_password = TextInput::default();
-        modal.confirm_password = TextInput::default();
-        modal.security_msg = Some(("Мастер-пароль успешно сохранен!".to_string(), false));
-    }
-
-    pub fn remove_master_password(&mut self) {
-        let Some(modal) = &mut self.settings_modal else { return; };
-        if let Some(existing_hash) = &self.hosts_doc.settings.master_password_hash {
-            let current = modal.current_password.text.trim();
-            if !verify_password(current, existing_hash) {
-                modal.security_msg = Some(("Для удаления пароля введите верный текущий пароль".to_string(), true));
-                return;
-            }
-        }
-        self.hosts_doc.settings.master_password_hash = None;
-        let _ = save_hosts(&self.hosts_doc);
-        modal.current_password = TextInput::default();
-        modal.new_password = TextInput::default();
-        modal.confirm_password = TextInput::default();
-        modal.security_msg = Some(("Мастер-пароль успешно удален".to_string(), false));
-    }
-
-    pub fn try_unlock_app(&mut self) -> bool {
-        if let Some(hash) = &self.hosts_doc.settings.master_password_hash {
-            let entered = self.lock_password_input.text.trim();
-            if verify_password(entered, hash) {
-                self.is_app_locked = false;
-                self.lock_password_input = TextInput::default();
-                self.lock_error_msg = None;
-                return true;
-            } else {
-                self.lock_error_msg = Some("Неверный мастер-пароль. Попробуйте еще раз.".to_string());
-                return false;
-            }
-        }
-        self.is_app_locked = false;
-        true
-    }
-
-    pub fn export_backup_dialog(&mut self) {
-        let bundle = ExportBundle {
-            version: 1,
-            exported_at: chrono::Local::now().to_rfc3339(),
-            hosts: self.hosts_doc.hosts.clone(),
-            settings: self.hosts_doc.settings.clone(),
-        };
-
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Экспорт конфигурации EvertySSH")
-            .set_file_name("evertyssh_backup.json")
-            .add_filter("EvertySSH Backup (*.json)", &["json"])
-            .save_file()
-        {
-            match serde_json::to_string_pretty(&bundle) {
-                Ok(json_str) => match std::fs::write(&path, json_str) {
-                    Ok(_) => {
-                        if let Some(m) = &mut self.settings_modal {
-                            m.backup_msg = Some((format!("Успешно экспортировано {} серверов", bundle.hosts.len()), false));
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(m) = &mut self.settings_modal {
-                            m.backup_msg = Some((format!("Ошибка записи: {e}"), true));
-                        }
-                    }
-                },
-                Err(e) => {
-                    if let Some(m) = &mut self.settings_modal {
-                        m.backup_msg = Some((format!("Ошибка сериализации: {e}"), true));
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn import_backup_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Импорт конфигурации EvertySSH")
-            .add_filter("EvertySSH Backup (*.json)", &["json"])
-            .pick_file()
-        {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str::<ExportBundle>(&content) {
-                    Ok(bundle) => {
-                        let count = bundle.hosts.len();
-                        for h in bundle.hosts {
-                            if !self.hosts_doc.hosts.iter().any(|existing| existing.id == h.id) {
-                                self.hosts_doc.hosts.push(h);
-                            }
-                        }
-                        let _ = save_hosts(&self.hosts_doc);
-                        if let Some(m) = &mut self.settings_modal {
-                            m.backup_msg = Some((format!("Импортировано и объединено {} серверов", count), false));
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(m) = &mut self.settings_modal {
-                            m.backup_msg = Some((format!("Неверный формат резервной копии: {e}"), true));
-                        }
-                    }
-                },
-                Err(e) => {
-                    if let Some(m) = &mut self.settings_modal {
-                        m.backup_msg = Some((format!("Не удалось прочитать файл: {e}"), true));
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn save_general_settings(&mut self) {
-        let Some(modal) = &mut self.settings_modal else { return; };
-        let def_u = modal.default_user.text.trim();
-        if !def_u.is_empty() {
-            self.hosts_doc.settings.default_user = def_u.to_string();
-        }
-        if let Ok(sb) = modal.scrollback_lines.text.trim().parse::<usize>() {
-            if sb >= 100 && sb <= 100_000 {
-                self.hosts_doc.settings.scrollback_lines = sb;
-            }
-        }
-        self.hosts_doc.settings.confirm_delete = modal.confirm_delete;
-        let _ = save_hosts(&self.hosts_doc);
-        modal.general_msg = Some(("Параметры успешно сохранены!".to_string(), false));
-    }
-
-    pub fn refresh_recent_sessions(&mut self) {
-        if let Ok(sessions) = self.db.list_recent_sessions(30) {
-            self.recent_sessions = sessions;
-        }
-    }
-
-    pub fn refresh_command_search(&mut self) {
-        let q = self.command_search_input.text.trim();
-        let res = if q.is_empty() {
-            self.db.list_recent_commands(50)
-        } else {
-            self.db.search_command_history(q, None, 50)
-        };
-        if let Ok(records) = res {
-            self.command_search_results = records;
-            self.selected_search_idx = 0;
-        }
-    }
-
-    pub fn connect_to_host(&mut self, host: HostConfig) {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let title = host.name.clone();
-        let host_address = format!("{}:{}", host.hostname, host.port);
-        let username = host.username.clone();
-
-        let _ = self.db.record_session_start(
-            &session_id,
-            Some(&host.id),
-            &host_address,
-            &username,
-        );
-
-        let mut terminal = Terminal::new(self.terminal_cols, self.terminal_rows, 5000);
-        let welcome = format!(
-            "\x1b[38;2;45;212;191m⚡ EvertySSH v0.1.0\x1b[0m\r\nConnecting to \x1b[38;2;52;211;153m{}@{}\x1b[0m...\r\n",
-            username, host_address
-        );
-        terminal.write_bytes(welcome.as_bytes());
-
-        let tab = SessionTab {
-            id: session_id.clone(),
-            title,
-            host_address: host_address.clone(),
-            username,
-            terminal,
-            handle: None,
-            current_input_buffer: String::new(),
-            status: "🟡 Connecting...".into(),
-            host_id: Some(host.id.clone()),
-            host_config: Some(host.clone()),
-        };
-
-        self.tabs.push(tab);
-        self.active_tab = self.tabs.len() - 1;
-
-        let _s_id = session_id.clone();
-        let event_tx = self.event_tx.clone();
-        let cols = self.terminal_cols as u32;
-        let rows = self.terminal_rows as u32;
-
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-
-        let s_id_bridge = session_id.clone();
-        let event_tx_bridge = event_tx.clone();
-        self.tokio_handle.spawn(async move {
-            while let Some(bytes) = out_rx.recv().await {
-                if event_tx_bridge
-                    .send(AppEvent::SshOutput {
-                        session_id: s_id_bridge.clone(),
-                        data: bytes,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-
-        let s_id_task = session_id.clone();
-        let event_tx_task = event_tx.clone();
-        self.tokio_handle.spawn(async move {
-            match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx, event_tx_task).await {
-                Ok(handle) => {
-                    let is_conn = handle.is_connected.clone();
-                    let s_id_mon = s_id_task.clone();
-                    let event_tx_mon = event_tx.clone();
-
-                    let _ = event_tx.send(AppEvent::SshConnected {
-                        session_id: s_id_task.clone(),
-                        handle,
-                    });
-
-                    tokio::spawn(async move {
-                        while *is_conn.read() {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-                        }
-                        let _ = event_tx_mon.send(AppEvent::SshDisconnected {
-                            session_id: s_id_mon,
-                            error: None,
-                        });
-                    });
-                }
-                Err(err) => {
-                    let _ = event_tx.send(AppEvent::SshDisconnected {
-                        session_id: s_id_task,
-                        error: Some(err),
-                    });
-                }
-            }
-        });
-
-        self.refresh_recent_sessions();
-    }
-
-    pub fn reconnect_tab(&mut self, tab_idx: usize) {
-        if tab_idx >= self.tabs.len() {
-            return;
-        }
-        let (host_cfg, host_id, host_address, username) = {
-            let tab = &mut self.tabs[tab_idx];
-            let cfg = tab.host_config.clone().or_else(|| {
-                tab.host_id.as_ref().and_then(|hid| self.hosts_doc.hosts.iter().find(|h| &h.id == hid).cloned())
-            });
-            (cfg, tab.host_id.clone(), tab.host_address.clone(), tab.username.clone())
-        };
-
-        if let Some(host) = host_cfg {
-            let new_session_id = uuid::Uuid::new_v4().to_string();
-            let tab = &mut self.tabs[tab_idx];
-            tab.id = new_session_id.clone();
-            tab.status = "🟡 Подключение...".into();
-            tab.handle = None;
-            tab.host_config = Some(host.clone());
-
-            let _ = self.db.record_session_start(
-                &new_session_id,
-                host_id.as_deref().or(Some(&host.id)),
-                &host_address,
-                &username,
+        if crate::paste::needs_preview(text) {
+            self.open_confirm_run_modal(
+                crate::paste::encode(text, false),
+                "Вставка в терминал / Paste into terminal".into(),
             );
-
-            let msg = format!(
-                "\r\n\x1b[38;2;45;212;191m🔄 Повторное подключение к {}@{}...\x1b[0m\r\n",
-                username, host_address
-            );
-            tab.terminal.write_bytes(msg.as_bytes());
-
-            let event_tx = self.event_tx.clone();
-            let cols = self.terminal_cols as u32;
-            let rows = self.terminal_rows as u32;
-
-            let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-
-            let s_id_bridge = new_session_id.clone();
-            let event_tx_bridge = event_tx.clone();
-            self.tokio_handle.spawn(async move {
-                while let Some(bytes) = out_rx.recv().await {
-                    if event_tx_bridge
-                        .send(AppEvent::SshOutput {
-                            session_id: s_id_bridge.clone(),
-                            data: bytes,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-
-            let s_id_task = new_session_id.clone();
-            let event_tx_task = event_tx.clone();
-            self.tokio_handle.spawn(async move {
-                match connect_ssh(host, s_id_task.clone(), cols, rows, out_tx, event_tx_task).await {
-                    Ok(handle) => {
-                        let is_conn = handle.is_connected.clone();
-                        let s_id_mon = s_id_task.clone();
-                        let event_tx_mon = event_tx.clone();
-
-                        let _ = event_tx.send(AppEvent::SshConnected {
-                            session_id: s_id_task.clone(),
-                            handle,
-                        });
-
-                        tokio::spawn(async move {
-                            while *is_conn.read() {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-                            }
-                            let _ = event_tx_mon.send(AppEvent::SshDisconnected {
-                                session_id: s_id_mon,
-                                error: None,
-                            });
-                        });
-                    }
-                    Err(err) => {
-                        let _ = event_tx.send(AppEvent::SshDisconnected {
-                            session_id: s_id_task,
-                            error: Some(err),
-                        });
-                    }
-                }
-            });
-
-            self.refresh_recent_sessions();
+            if let Some(modal) = &mut self.confirm_run_modal {
+                modal.paste = true;
+            }
+        } else {
+            let text = crate::paste::encode(text, tab.terminal.screen.bracketed_paste);
+            self.send_to_terminal(self.active_tab, &text);
         }
     }
 
@@ -3618,7 +3322,9 @@ impl AppState {
             return;
         }
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            let matches = tab.terminal.search(&query_text, self.search_state.case_sensitive);
+            let matches = tab
+                .terminal
+                .search(&query_text, self.search_state.case_sensitive);
             self.search_state.matches = matches;
             if self.search_state.matches.is_empty() {
                 self.search_state.selected_match_idx = 0;
@@ -3843,43 +3549,9 @@ impl AppState {
             return;
         }
 
-        // 3. Regular Terminal Input
-        let mut recorded_cmd = None;
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.terminal.scroll_to_bottom();
-            for ch in text.chars() {
-                if ch == '\r' || ch == '\n' {
-                    let cmd = tab.current_input_buffer.trim().to_string();
-                    if !cmd.is_empty() {
-                        recorded_cmd = Some((tab.id.clone(), tab.host_address.clone(), cmd));
-                    }
-                    tab.current_input_buffer.clear();
-                } else if ch == '\x08' {
-                    tab.current_input_buffer.pop();
-                } else if !ch.is_control() {
-                    tab.current_input_buffer.push(ch);
-                }
-            }
-
-            if let Some(handle) = &tab.handle {
-                let data = text.as_bytes().to_vec();
-                let handle_clone = handle.input_tx.clone();
-                self.tokio_handle.spawn(async move {
-                    let _ = handle_clone.send(data).await;
-                });
-            } else {
-                tab.terminal.write_bytes(text.as_bytes());
-            }
-        }
-
-        if let Some((tab_id, host_addr, cmd)) = recorded_cmd {
-            let _ = self.db.record_command(
-                Some(&tab_id),
-                &host_addr,
-                &cmd,
-            );
-            self.refresh_command_search();
-        }
+        // Raw input includes passwords and editor keystrokes. Only shell integration
+        // can report the command actually executed after readline editing.
+        self.send_to_active_terminal(text);
     }
 
     pub fn execute_selected_palette_command(&mut self) {
@@ -3890,16 +3562,21 @@ impl AppState {
     }
 
     pub fn send_to_active_terminal(&mut self, text: &str) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+        self.send_to_terminal(self.active_tab, text);
+    }
+
+    fn send_to_terminal(&mut self, index: usize, text: &str) {
+        if self.is_app_locked {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(index) {
             tab.terminal.scroll_to_bottom();
             if let Some(handle) = &tab.handle {
-                let data = text.as_bytes().to_vec();
-                let handle_clone = handle.input_tx.clone();
-                self.tokio_handle.spawn(async move {
-                    let _ = handle_clone.send(data).await;
-                });
-            } else {
-                tab.terminal.write_bytes(text.as_bytes());
+                if *handle.is_connected.read() {
+                    if let Err(e) = handle.input_tx.try_send(text.as_bytes().to_vec()) {
+                        self.show_error(&format!("SSH input was not sent: {e}"));
+                    }
+                }
             }
         }
     }
@@ -3923,24 +3600,25 @@ impl AppState {
     }
 
     pub fn open_key_tool_for_host(&mut self, host_idx: usize) {
-        let (suggested_name, suggested_comment) = if let Some(h) = self.hosts_doc.hosts.get(host_idx) {
-            let safe_name: String = h
-                .name
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            let safe_name = if safe_name.is_empty() {
-                "server".into()
+        let (suggested_name, suggested_comment) =
+            if let Some(h) = self.hosts_doc.hosts.get(host_idx) {
+                let safe_name: String = h
+                    .name
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .collect();
+                let safe_name = if safe_name.is_empty() {
+                    "server".into()
+                } else {
+                    safe_name.to_lowercase()
+                };
+                (
+                    format!("id_ed25519_{safe_name}"),
+                    format!("{}@{}", h.username, h.hostname),
+                )
             } else {
-                safe_name.to_lowercase()
+                ("id_ed25519".into(), "user@evertyssh".into())
             };
-            (
-                format!("id_ed25519_{safe_name}"),
-                format!("{}@{}", h.username, h.hostname),
-            )
-        } else {
-            ("id_ed25519".into(), "user@evertyssh".into())
-        };
 
         self.key_tool_modal = KeyToolModal {
             is_open: true,
@@ -3981,32 +3659,36 @@ impl AppState {
     }
 
     pub fn bind_generated_key_to_host(&mut self) -> bool {
-        if let (Some(host_idx), Some(priv_path)) = (
+        let (Some(index), Some(path)) = (
             self.key_tool_modal.target_host_idx,
-            &self.key_tool_modal.generated_priv_path,
-        ) {
-            let host_name = if let Some(host) = self.hosts_doc.hosts.get_mut(host_idx) {
-                host.auth = AuthConfig::Key {
-                    path: PathBuf::from(priv_path),
-                    passphrase: if self.key_tool_modal.passphrase.text.is_empty() {
-                        None
-                    } else {
-                        Some(self.key_tool_modal.passphrase.text.clone())
-                    },
-                };
-                Some(host.name.clone())
-            } else {
+            self.key_tool_modal.generated_priv_path.clone(),
+        ) else {
+            return false;
+        };
+        let mut proposed = self.hosts_doc.clone();
+        let Some(host) = proposed.hosts.get_mut(index) else {
+            return false;
+        };
+        host.auth = AuthConfig::Key {
+            path: path.into(),
+            passphrase: if self.key_tool_modal.passphrase.text.is_empty() {
                 None
-            };
-
-            if let Some(name) = host_name {
-                let _ = save_hosts(&self.hosts_doc);
+            } else {
+                Some(self.key_tool_modal.passphrase.text.clone())
+            },
+        };
+        let name = host.name.clone();
+        match self.commit_document(proposed) {
+            Ok(()) => {
                 self.key_tool_modal.status_msg =
-                    Some(format!("✓ Ключ привязан к серверу '{name}'"));
-                return true;
+                    Some(format!("Ключ привязан к серверу / Key bound to '{name}'"));
+                true
+            }
+            Err(e) => {
+                self.key_tool_modal.error_msg = Some(e);
+                false
             }
         }
-        false
     }
 
     pub fn send_deploy_cmd_to_active_terminal(&mut self) -> bool {
@@ -4035,6 +3717,10 @@ impl AppState {
     pub fn close_active_tab(&mut self) {
         if self.active_tab < self.tabs.len() {
             let removed = self.tabs.remove(self.active_tab);
+            if let Some(task) = self.pending_connections.remove(&removed.id) {
+                task.abort();
+            }
+            self.advance_host_key_prompt();
             let _ = self.db.record_session_end(&removed.id, "closed", None);
             if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
                 self.active_tab = self.tabs.len() - 1;
@@ -4043,45 +3729,184 @@ impl AppState {
         }
     }
 
-    pub fn get_hover_tooltip_text<'a>(&'a self, target: HoverTarget) -> Option<std::borrow::Cow<'a, str>> {
+    pub fn get_hover_tooltip_text<'a>(
+        &'a self,
+        target: HoverTarget,
+    ) -> Option<std::borrow::Cow<'a, str>> {
         let lang = self.hosts_doc.settings.language;
         let s = match target {
-            HoverTarget::HeaderAddBtn => std::borrow::Cow::Borrowed(tr(lang, "Добавить новый хост (Ctrl+N)", "Add new host (Ctrl+N)")),
-            HoverTarget::HeaderSearchBtn => std::borrow::Cow::Borrowed(tr(lang, "Поиск по истории команд (Ctrl+R)", "Search command history (Ctrl+R)")),
-            HoverTarget::HeaderLangBtn => std::borrow::Cow::Borrowed(tr(lang, "Переключить язык (RU/EN)", "Switch language (RU/EN)")),
-            HoverTarget::HeaderSettingsBtn => std::borrow::Cow::Borrowed(tr(lang, "Настройки: мастер-пароль, язык, бэкап", "Settings: master password, language, backup")),
-            HoverTarget::SidebarSplitter => std::borrow::Cow::Borrowed(tr(lang, "Потяните мышью для изменения ширины панели", "Drag to resize sidebar")),
-            HoverTarget::SidebarAddHostBtn => std::borrow::Cow::Borrowed(tr(lang, "Добавить новый сервер", "Add new server")),
-            HoverTarget::SidebarAddSnippetBtn => std::borrow::Cow::Borrowed(tr(lang, "Создать новый сниппет", "Create new snippet")),
-            HoverTarget::HostDeployKey(_) => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать и установить SSH ключ на сервер", "Generate & deploy SSH key to server")),
-            HoverTarget::HostConnect(_) => std::borrow::Cow::Borrowed(tr(lang, "Подключиться к серверу", "Connect to server")),
-            HoverTarget::HostEdit(_) => std::borrow::Cow::Borrowed(tr(lang, "Редактировать параметры сервера", "Edit server configuration")),
-            HoverTarget::HostDelete(_) => std::borrow::Cow::Borrowed(tr(lang, "Удалить сервер из списка", "Delete server from list")),
-            HoverTarget::SessionCard(_) => std::borrow::Cow::Borrowed(tr(lang, "Открыть подробный дашборд сессии и журнал команд", "Open session dashboard & command log")),
-            HoverTarget::SessionDashboardReconnect => std::borrow::Cow::Borrowed(tr(lang, "Переподключиться к серверу в новой вкладке", "Reconnect to server in new tab")),
-            HoverTarget::SessionDashboardDelete => std::borrow::Cow::Borrowed(tr(lang, "Удалить эту сессию из истории", "Delete this session from history")),
-            HoverTarget::SessionDashboardRunCmd(_) => std::borrow::Cow::Borrowed(tr(lang, "Запустить команду в активной консоли", "Run command in active terminal")),
-            HoverTarget::SessionDashboardCopyCmd(_) => std::borrow::Cow::Borrowed(tr(lang, "Скопировать команду в буфер", "Copy command to clipboard")),
-            HoverTarget::SnippetRun(_) => std::borrow::Cow::Borrowed(tr(lang, "Запустить сниппет в активном терминале", "Run snippet in active terminal")),
-            HoverTarget::SnippetCopy(_) => std::borrow::Cow::Borrowed(tr(lang, "Скопировать текст сниппета", "Copy snippet text")),
-            HoverTarget::SnippetEdit(_) => std::borrow::Cow::Borrowed(tr(lang, "Редактировать параметры сниппета", "Edit snippet configuration")),
-            HoverTarget::SnippetDelete(_) => std::borrow::Cow::Borrowed(tr(lang, "Удалить сниппет", "Delete snippet")),
-            HoverTarget::ConfirmDeleteSnippetConfirm => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить удаление сниппета", "Confirm snippet deletion")),
-            HoverTarget::ConfirmDeleteSnippetCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить удаление сниппета (Esc)", "Cancel snippet deletion (Esc)")),
-            HoverTarget::KeyToolGenerateBtn => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать ключевую пару OpenSSH", "Generate OpenSSH key pair")),
-            HoverTarget::KeyToolSendTermBtn => std::borrow::Cow::Borrowed(tr(lang, "Отправить ключ и настроить authorized_keys", "Deploy key to authorized_keys")),
-            HoverTarget::KeyToolBindHostBtn => std::borrow::Cow::Borrowed(tr(lang, "Привязать ключ к профилю сервера", "Attach key to server profile")),
-            HoverTarget::KeyToolCopyPubBtn => std::borrow::Cow::Borrowed(tr(lang, "Скопировать публичный ключ", "Copy public key")),
-            HoverTarget::ModalBrowseKey => std::borrow::Cow::Borrowed(tr(lang, "Выбрать файл ключа через проводник", "Browse key file via explorer")),
-            HoverTarget::ModalGenerateKey => std::borrow::Cow::Borrowed(tr(lang, "Сгенерировать новый SSH ключ", "Generate new SSH key")),
-            HoverTarget::SidebarSearchHost => std::borrow::Cow::Borrowed(tr(lang, "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)", "Search servers by name, host, user or group (Esc to clear)")),
-            HoverTarget::SidebarSearchSnippet => std::borrow::Cow::Borrowed(tr(lang, "Поиск сохраненных сниппетов (Esc для сброса)", "Search saved snippets (Esc to clear)")),
-            HoverTarget::SidebarSearchCommand => std::borrow::Cow::Borrowed(tr(lang, "Поиск в истории команд", "Search command history")),
-            HoverTarget::HostKeyModalAccept => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить ключ хоста и продолжить подключение", "Accept host key and continue connection")),
-            HoverTarget::HostKeyModalReject => std::borrow::Cow::Borrowed(tr(lang, "Отклонить ключ и разорвать соединение (Esc)", "Reject host key and abort connection (Esc)")),
-            HoverTarget::HostKeyModalCopy => std::borrow::Cow::Borrowed(tr(lang, "Скопировать отпечаток (fingerprint) в буфер", "Copy fingerprint to clipboard")),
-            HoverTarget::ConfirmDeleteConfirm => std::borrow::Cow::Borrowed(tr(lang, "Подтвердить безвозвратное удаление сервера", "Confirm permanent server deletion")),
-            HoverTarget::ConfirmDeleteCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить удаление сервера (Esc)", "Cancel server deletion (Esc)")),
+            HoverTarget::HeaderAddBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Добавить новый хост (Ctrl+N)",
+                "Add new host (Ctrl+N)",
+            )),
+            HoverTarget::HeaderSearchBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поиск по истории команд (Ctrl+R)",
+                "Search command history (Ctrl+R)",
+            )),
+            HoverTarget::HeaderLangBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Переключить язык (RU/EN)",
+                "Switch language (RU/EN)",
+            )),
+            HoverTarget::HeaderSettingsBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Настройки: мастер-пароль, язык, бэкап",
+                "Settings: master password, language, backup",
+            )),
+            HoverTarget::SidebarSplitter => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Потяните мышью для изменения ширины панели",
+                "Drag to resize sidebar",
+            )),
+            HoverTarget::SidebarAddHostBtn => {
+                std::borrow::Cow::Borrowed(tr(lang, "Добавить новый сервер", "Add new server"))
+            }
+            HoverTarget::SidebarAddSnippetBtn => {
+                std::borrow::Cow::Borrowed(tr(lang, "Создать новый сниппет", "Create new snippet"))
+            }
+            HoverTarget::HostDeployKey(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Сгенерировать и установить SSH ключ на сервер",
+                "Generate & deploy SSH key to server",
+            )),
+            HoverTarget::HostConnect(_) => {
+                std::borrow::Cow::Borrowed(tr(lang, "Подключиться к серверу", "Connect to server"))
+            }
+            HoverTarget::HostEdit(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Редактировать параметры сервера",
+                "Edit server configuration",
+            )),
+            HoverTarget::HostDelete(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Удалить сервер из списка",
+                "Delete server from list",
+            )),
+            HoverTarget::SessionCard(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Открыть подробный дашборд сессии и журнал команд",
+                "Open session dashboard & command log",
+            )),
+            HoverTarget::SessionDashboardReconnect => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Переподключиться к серверу в новой вкладке",
+                "Reconnect to server in new tab",
+            )),
+            HoverTarget::SessionDashboardDelete => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Удалить эту сессию из истории",
+                "Delete this session from history",
+            )),
+            HoverTarget::SessionDashboardRunCmd(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Запустить команду в активной консоли",
+                "Run command in active terminal",
+            )),
+            HoverTarget::SessionDashboardCopyCmd(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Скопировать команду в буфер",
+                "Copy command to clipboard",
+            )),
+            HoverTarget::SnippetRun(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Запустить сниппет в активном терминале",
+                "Run snippet in active terminal",
+            )),
+            HoverTarget::SnippetCopy(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Скопировать текст сниппета",
+                "Copy snippet text",
+            )),
+            HoverTarget::SnippetEdit(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Редактировать параметры сниппета",
+                "Edit snippet configuration",
+            )),
+            HoverTarget::SnippetDelete(_) => {
+                std::borrow::Cow::Borrowed(tr(lang, "Удалить сниппет", "Delete snippet"))
+            }
+            HoverTarget::ConfirmDeleteSnippetConfirm => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Подтвердить удаление сниппета",
+                "Confirm snippet deletion",
+            )),
+            HoverTarget::ConfirmDeleteSnippetCancel => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отменить удаление сниппета (Esc)",
+                "Cancel snippet deletion (Esc)",
+            )),
+            HoverTarget::KeyToolGenerateBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Сгенерировать ключевую пару OpenSSH",
+                "Generate OpenSSH key pair",
+            )),
+            HoverTarget::KeyToolSendTermBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отправить ключ и настроить authorized_keys",
+                "Deploy key to authorized_keys",
+            )),
+            HoverTarget::KeyToolBindHostBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Привязать ключ к профилю сервера",
+                "Attach key to server profile",
+            )),
+            HoverTarget::KeyToolCopyPubBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Скопировать публичный ключ",
+                "Copy public key",
+            )),
+            HoverTarget::ModalBrowseKey => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Выбрать файл ключа через проводник",
+                "Browse key file via explorer",
+            )),
+            HoverTarget::ModalGenerateKey => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Сгенерировать новый SSH ключ",
+                "Generate new SSH key",
+            )),
+            HoverTarget::SidebarSearchHost => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поиск серверов по имени, адресу, логину или группе (Esc для сброса)",
+                "Search servers by name, host, user or group (Esc to clear)",
+            )),
+            HoverTarget::SidebarSearchSnippet => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поиск сохраненных сниппетов (Esc для сброса)",
+                "Search saved snippets (Esc to clear)",
+            )),
+            HoverTarget::SidebarSearchCommand => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поиск в истории команд",
+                "Search command history",
+            )),
+            HoverTarget::HostKeyModalAccept => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Подтвердить ключ хоста и продолжить подключение",
+                "Accept host key and continue connection",
+            )),
+            HoverTarget::HostKeyModalReject => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отклонить ключ и разорвать соединение (Esc)",
+                "Reject host key and abort connection (Esc)",
+            )),
+            HoverTarget::HostKeyModalCopy => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Скопировать отпечаток (fingerprint) в буфер",
+                "Copy fingerprint to clipboard",
+            )),
+            HoverTarget::ConfirmDeleteConfirm => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Подтвердить безвозвратное удаление сервера",
+                "Confirm permanent server deletion",
+            )),
+            HoverTarget::ConfirmDeleteCancel => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отменить удаление сервера (Esc)",
+                "Cancel server deletion (Esc)",
+            )),
             HoverTarget::HeaderTab(idx) => {
                 if let Some(tab) = self.tabs.get(idx) {
                     std::borrow::Cow::Owned(format!("{}: {}", tab.title, tab.status))
@@ -4089,29 +3914,117 @@ impl AppState {
                     return None;
                 }
             }
-            HoverTarget::SettingsClose => std::borrow::Cow::Borrowed(tr(lang, "Закрыть настройки (Esc)", "Close settings (Esc)")),
-            HoverTarget::SettingsTab(SettingsTab::About) => std::borrow::Cow::Borrowed(tr(lang, "Информация о программе и разработчике", "About program and developer")),
-            HoverTarget::SettingsTab(SettingsTab::Security) => std::borrow::Cow::Borrowed(tr(lang, "Настройки безопасности и мастер-пароля", "Security & master password settings")),
-            HoverTarget::SettingsTab(SettingsTab::Backup) => std::borrow::Cow::Borrowed(tr(lang, "Резервное копирование и экспорт хостов", "Backup & export hosts")),
-            HoverTarget::SettingsTab(SettingsTab::General) => std::borrow::Cow::Borrowed(tr(lang, "Общие параметры и настройки интерфейса", "General options and interface settings")),
-            HoverTarget::SettingsAboutLinkDesk => std::borrow::Cow::Borrowed(tr(lang, "Открыть сайт desk.everty.ru", "Open desk.everty.ru website")),
-            HoverTarget::SettingsAboutLinkEmail => std::borrow::Cow::Borrowed(tr(lang, "Написать на info@everty.ru (копировать адрес)", "Write to info@everty.ru (copy address)")),
-            HoverTarget::SettingsAboutLinkTelegram => std::borrow::Cow::Borrowed(tr(lang, "Открыть Telegram канал: @Everty_web", "Open Telegram channel: @Everty_web")),
-            HoverTarget::SettingsAboutLinkGithub => std::borrow::Cow::Borrowed(tr(lang, "Репозиторий EvertySSH на GitHub", "EvertySSH GitHub repository")),
-            HoverTarget::SettingsSavePassword => std::borrow::Cow::Borrowed(tr(lang, "Сохранить настройки мастер-пароля", "Save master password settings")),
-            HoverTarget::SettingsRemovePassword => std::borrow::Cow::Borrowed(tr(lang, "Отключить защиту паролем", "Disable password protection")),
-            HoverTarget::SettingsExportJson => std::borrow::Cow::Borrowed(tr(lang, "Экспортировать серверы и настройки в JSON файл", "Export servers & settings to JSON")),
-            HoverTarget::SettingsImportJson => std::borrow::Cow::Borrowed(tr(lang, "Импортировать серверы из файла резервной копии", "Import servers from JSON backup")),
-            HoverTarget::SettingsSaveGeneral => std::borrow::Cow::Borrowed(tr(lang, "Сохранить общие настройки", "Save general settings")),
-            HoverTarget::SettingsToggleConfirmDelete => std::borrow::Cow::Borrowed(tr(lang, "Включить/выключить подтверждение удаления", "Toggle delete confirmation dialog")),
-            HoverTarget::SettingsSetLanguage(AppLanguage::Ru) => std::borrow::Cow::Borrowed("Переключить интерфейс на Русский язык"),
-            HoverTarget::SettingsSetLanguage(AppLanguage::En) => std::borrow::Cow::Borrowed("Switch interface to English language"),
-            HoverTarget::LockUnlockBtn => std::borrow::Cow::Borrowed(tr(lang, "Разблокировать приложение (Enter)", "Unlock application (Enter)")),
-            HoverTarget::ConfirmRunExecute => std::borrow::Cow::Borrowed(tr(lang, "Выполнить команду в консоли (Enter)", "Execute command in terminal (Enter)")),
-            HoverTarget::ConfirmRunCancel => std::borrow::Cow::Borrowed(tr(lang, "Отменить запуск команды (Esc)", "Cancel command execution (Esc)")),
-            HoverTarget::ConfirmRunCopy => std::borrow::Cow::Borrowed(tr(lang, "Скопировать текст команды в буфер", "Copy command text")),
-            HoverTarget::TerminalReconnect(_) => std::borrow::Cow::Borrowed(tr(lang, "Повторно подключиться к серверу в этой вкладке", "Reconnect session in this tab")),
-            HoverTarget::TerminalCloseTab(_) => std::borrow::Cow::Borrowed(tr(lang, "Закрыть эту вкладку терминала", "Close this terminal tab")),
+            HoverTarget::SettingsClose => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Закрыть настройки (Esc)",
+                "Close settings (Esc)",
+            )),
+            HoverTarget::SettingsTab(SettingsTab::About) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Информация о программе и разработчике",
+                "About program and developer",
+            )),
+            HoverTarget::SettingsTab(SettingsTab::Security) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Настройки безопасности и мастер-пароля",
+                "Security & master password settings",
+            )),
+            HoverTarget::SettingsTab(SettingsTab::Backup) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Резервное копирование и экспорт хостов",
+                "Backup & export hosts",
+            )),
+            HoverTarget::SettingsTab(SettingsTab::General) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Общие параметры и настройки интерфейса",
+                "General options and interface settings",
+            )),
+            HoverTarget::SettingsAboutLinkDesk => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Открыть сайт desk.everty.ru",
+                "Open desk.everty.ru website",
+            )),
+            HoverTarget::SettingsAboutLinkEmail => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Написать на info@everty.ru (копировать адрес)",
+                "Write to info@everty.ru (copy address)",
+            )),
+            HoverTarget::SettingsAboutLinkTelegram => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Открыть Telegram канал: @Everty_web",
+                "Open Telegram channel: @Everty_web",
+            )),
+            HoverTarget::SettingsAboutLinkGithub => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Репозиторий EvertySSH на GitHub",
+                "EvertySSH GitHub repository",
+            )),
+            HoverTarget::SettingsSavePassword => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Сохранить настройки мастер-пароля",
+                "Save master password settings",
+            )),
+            HoverTarget::SettingsRemovePassword => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отключить защиту паролем",
+                "Disable password protection",
+            )),
+            HoverTarget::SettingsExportJson => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Экспортировать серверы и настройки в JSON файл",
+                "Export servers & settings to JSON",
+            )),
+            HoverTarget::SettingsImportJson => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Импортировать серверы из файла резервной копии",
+                "Import servers from JSON backup",
+            )),
+            HoverTarget::SettingsSaveGeneral => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Сохранить общие настройки",
+                "Save general settings",
+            )),
+            HoverTarget::SettingsToggleConfirmDelete => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Включить/выключить подтверждение удаления",
+                "Toggle delete confirmation dialog",
+            )),
+            HoverTarget::SettingsSetLanguage(AppLanguage::Ru) => {
+                std::borrow::Cow::Borrowed("Переключить интерфейс на Русский язык")
+            }
+            HoverTarget::SettingsSetLanguage(AppLanguage::En) => {
+                std::borrow::Cow::Borrowed("Switch interface to English language")
+            }
+            HoverTarget::LockUnlockBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Разблокировать приложение (Enter)",
+                "Unlock application (Enter)",
+            )),
+            HoverTarget::ConfirmRunExecute => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Выполнить команду в консоли (Enter)",
+                "Execute command in terminal (Enter)",
+            )),
+            HoverTarget::ConfirmRunCancel => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Отменить запуск команды (Esc)",
+                "Cancel command execution (Esc)",
+            )),
+            HoverTarget::ConfirmRunCopy => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Скопировать текст команды в буфер",
+                "Copy command text",
+            )),
+            HoverTarget::TerminalReconnect(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Повторно подключиться к серверу в этой вкладке",
+                "Reconnect session in this tab",
+            )),
+            HoverTarget::TerminalCloseTab(_) => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Закрыть эту вкладку терминала",
+                "Close this terminal tab",
+            )),
             HoverTarget::TerminalStatusBanner(tab_idx) => {
                 if let Some(tab) = self.tabs.get(tab_idx) {
                     std::borrow::Cow::Borrowed(tab.status.as_str())
@@ -4120,15 +4033,49 @@ impl AppState {
                 }
             }
             HoverTarget::QuickAction(cmd) => std::borrow::Cow::Borrowed(cmd.tooltip()),
-            HoverTarget::TerminalSearchOpenBtn => std::borrow::Cow::Borrowed(tr(lang, "Поиск текста в консоли (Ctrl+F)", "Search text in terminal (Ctrl+F)")),
-            HoverTarget::TerminalSearchCloseBtn => std::borrow::Cow::Borrowed(tr(lang, "Закрыть поиск (Esc)", "Close search (Esc)")),
-            HoverTarget::TerminalSearchPrevBtn => std::borrow::Cow::Borrowed(tr(lang, "Предыдущее совпадение (Shift+Enter)", "Previous match (Shift+Enter)")),
-            HoverTarget::TerminalSearchNextBtn => std::borrow::Cow::Borrowed(tr(lang, "Следующее совпадение (Enter)", "Next match (Enter)")),
-            HoverTarget::TerminalSearchCaseToggle => std::borrow::Cow::Borrowed(tr(lang, "Учитывать регистр символов (Aa)", "Match case (Aa)")),
-            HoverTarget::TerminalSearchInput => std::borrow::Cow::Borrowed(tr(lang, "Поле поиска текста в терминале", "Terminal search input")),
-            HoverTarget::TerminalSplitBtn => std::borrow::Cow::Borrowed(tr(lang, "Разделить экран терминала (Ctrl+Alt+S)", "Split terminal screen (Ctrl+Alt+S)")),
-            HoverTarget::TerminalSplitClose => std::borrow::Cow::Borrowed(tr(lang, "Закрыть разделение терминала", "Close terminal split")),
-            HoverTarget::SplitTerminalArea => std::borrow::Cow::Borrowed(tr(lang, "Активировать этот терминал", "Activate this terminal")),
+            HoverTarget::TerminalSearchOpenBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поиск текста в консоли (Ctrl+F)",
+                "Search text in terminal (Ctrl+F)",
+            )),
+            HoverTarget::TerminalSearchCloseBtn => {
+                std::borrow::Cow::Borrowed(tr(lang, "Закрыть поиск (Esc)", "Close search (Esc)"))
+            }
+            HoverTarget::TerminalSearchPrevBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Предыдущее совпадение (Shift+Enter)",
+                "Previous match (Shift+Enter)",
+            )),
+            HoverTarget::TerminalSearchNextBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Следующее совпадение (Enter)",
+                "Next match (Enter)",
+            )),
+            HoverTarget::TerminalSearchCaseToggle => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Учитывать регистр символов (Aa)",
+                "Match case (Aa)",
+            )),
+            HoverTarget::TerminalSearchInput => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Поле поиска текста в терминале",
+                "Terminal search input",
+            )),
+            HoverTarget::TerminalSplitBtn => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Разделить экран терминала (Ctrl+Alt+S)",
+                "Split terminal screen (Ctrl+Alt+S)",
+            )),
+            HoverTarget::TerminalSplitClose => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Закрыть разделение терминала",
+                "Close terminal split",
+            )),
+            HoverTarget::SplitTerminalArea => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Активировать этот терминал",
+                "Activate this terminal",
+            )),
             _ => return None,
         };
         Some(s)
@@ -4161,13 +4108,33 @@ impl AppState {
             InputFieldId::CommandSearch => Some(&mut self.command_search_input),
             InputFieldId::SnippetSearch => Some(&mut self.snippet_search_input),
             InputFieldId::HostSearch => Some(&mut self.host_search_input),
-            InputFieldId::SettingsSecurity(0) => self.settings_modal.as_mut().map(|m| &mut m.current_password),
-            InputFieldId::SettingsSecurity(1) => self.settings_modal.as_mut().map(|m| &mut m.new_password),
-            InputFieldId::SettingsSecurity(2) => self.settings_modal.as_mut().map(|m| &mut m.confirm_password),
+            InputFieldId::SettingsSecurity(0) => self
+                .settings_modal
+                .as_mut()
+                .map(|m| &mut m.current_password),
+            InputFieldId::SettingsSecurity(1) => {
+                self.settings_modal.as_mut().map(|m| &mut m.new_password)
+            }
+            InputFieldId::SettingsSecurity(2) => self
+                .settings_modal
+                .as_mut()
+                .map(|m| &mut m.confirm_password),
             InputFieldId::SettingsSecurity(_) => None,
-            InputFieldId::SettingsGeneral(0) => self.settings_modal.as_mut().map(|m| &mut m.default_user),
-            InputFieldId::SettingsGeneral(1) => self.settings_modal.as_mut().map(|m| &mut m.scrollback_lines),
+            InputFieldId::SettingsGeneral(0) => {
+                self.settings_modal.as_mut().map(|m| &mut m.default_user)
+            }
+            InputFieldId::SettingsGeneral(1) => self
+                .settings_modal
+                .as_mut()
+                .map(|m| &mut m.scrollback_lines),
             InputFieldId::SettingsGeneral(_) => None,
+            InputFieldId::SettingsBackup(0) => {
+                self.settings_modal.as_mut().map(|m| &mut m.backup_password)
+            }
+            InputFieldId::SettingsBackup(1) => {
+                self.settings_modal.as_mut().map(|m| &mut m.backup_confirm)
+            }
+            InputFieldId::SettingsBackup(_) => None,
             InputFieldId::LockPassword => Some(&mut self.lock_password_input),
             InputFieldId::TerminalSearch => Some(&mut self.search_state.query),
         }
@@ -4200,19 +4167,43 @@ impl AppState {
             InputFieldId::CommandSearch => Some(&self.command_search_input),
             InputFieldId::SnippetSearch => Some(&self.snippet_search_input),
             InputFieldId::HostSearch => Some(&self.host_search_input),
-            InputFieldId::SettingsSecurity(0) => self.settings_modal.as_ref().map(|m| &m.current_password),
-            InputFieldId::SettingsSecurity(1) => self.settings_modal.as_ref().map(|m| &m.new_password),
-            InputFieldId::SettingsSecurity(2) => self.settings_modal.as_ref().map(|m| &m.confirm_password),
+            InputFieldId::SettingsSecurity(0) => {
+                self.settings_modal.as_ref().map(|m| &m.current_password)
+            }
+            InputFieldId::SettingsSecurity(1) => {
+                self.settings_modal.as_ref().map(|m| &m.new_password)
+            }
+            InputFieldId::SettingsSecurity(2) => {
+                self.settings_modal.as_ref().map(|m| &m.confirm_password)
+            }
             InputFieldId::SettingsSecurity(_) => None,
-            InputFieldId::SettingsGeneral(0) => self.settings_modal.as_ref().map(|m| &m.default_user),
-            InputFieldId::SettingsGeneral(1) => self.settings_modal.as_ref().map(|m| &m.scrollback_lines),
+            InputFieldId::SettingsGeneral(0) => {
+                self.settings_modal.as_ref().map(|m| &m.default_user)
+            }
+            InputFieldId::SettingsGeneral(1) => {
+                self.settings_modal.as_ref().map(|m| &m.scrollback_lines)
+            }
             InputFieldId::SettingsGeneral(_) => None,
+            InputFieldId::SettingsBackup(0) => {
+                self.settings_modal.as_ref().map(|m| &m.backup_password)
+            }
+            InputFieldId::SettingsBackup(1) => {
+                self.settings_modal.as_ref().map(|m| &m.backup_confirm)
+            }
+            InputFieldId::SettingsBackup(_) => None,
             InputFieldId::LockPassword => Some(&self.lock_password_input),
             InputFieldId::TerminalSearch => Some(&self.search_state.query),
         }
     }
 
-    pub fn open_input_context_menu(&mut self, x: f64, y: f64, field_id: InputFieldId, win_w: f64, win_h: f64) {
+    pub fn open_input_context_menu(
+        &mut self,
+        x: f64,
+        y: f64,
+        field_id: InputFieldId,
+        win_w: f64,
+        win_h: f64,
+    ) {
         let menu_w = 170.0;
         let menu_h = 132.0;
         let clamped_x = x.min(win_w - menu_w - 8.0).max(8.0);
@@ -4275,134 +4266,6 @@ impl AppState {
             }
         }
     }
-
-    pub fn open_session_dashboard(&mut self, sess_idx: usize) {
-        if let Some(sess) = self.recent_sessions.get(sess_idx) {
-            let commands = self.db.list_session_commands(&sess.id).unwrap_or_default();
-            let host = sess.host_id.as_ref().and_then(|hid| {
-                self.hosts_doc.hosts.iter().find(|h| &h.id == hid).cloned()
-            });
-            self.session_dashboard_modal = Some(SessionDashboardModal {
-                is_open: true,
-                session: sess.clone(),
-                commands,
-                host,
-            });
-        }
-    }
-
-    pub fn delete_session_from_dashboard(&mut self) {
-        if let Some(dash) = self.session_dashboard_modal.take() {
-            let _ = self.db.delete_session(&dash.session.id);
-            self.refresh_recent_sessions();
-        }
-    }
-
-    pub fn refresh_snippets(&mut self) {
-        let q = self.snippet_search_input.text.trim();
-        let res = if q.is_empty() {
-            self.db.list_snippets()
-        } else {
-            self.db.search_snippets(q)
-        };
-        if let Ok(snips) = res {
-            self.snippets = snips;
-        }
-    }
-
-    pub fn open_add_snippet_dialog(&mut self) {
-        self.add_snippet_modal = AddSnippetModal {
-            is_open: true,
-            is_editing: false,
-            editing_id: None,
-            title: TextInput::default(),
-            command: TextInput::default(),
-            category: TextInput::new("General"),
-            description: TextInput::default(),
-            active_field: 0,
-            error_msg: None,
-        };
-        self.caret_visible = true;
-        self.caret_blink_time = std::time::Instant::now();
-    }
-
-    pub fn open_edit_snippet_dialog(&mut self, snip_idx: usize) {
-        if let Some(snip) = self.snippets.get(snip_idx) {
-            self.add_snippet_modal = AddSnippetModal {
-                is_open: true,
-                is_editing: true,
-                editing_id: Some(snip.id),
-                title: TextInput::new(&snip.title),
-                command: TextInput::new(&snip.command),
-                category: TextInput::new(snip.category.clone().unwrap_or_else(|| "General".into())),
-                description: TextInput::new(snip.description.clone().unwrap_or_default()),
-                active_field: 0,
-                error_msg: None,
-            };
-            self.caret_visible = true;
-            self.caret_blink_time = std::time::Instant::now();
-        }
-    }
-
-    pub fn open_confirm_delete_snippet_modal(&mut self, snip_idx: usize) {
-        if let Some(snip) = self.snippets.get(snip_idx) {
-            self.confirm_delete_snippet_modal = Some(ConfirmDeleteSnippetModal {
-                is_open: true,
-                snippet_id: snip.id,
-                snippet_title: snip.title.clone(),
-                snippet_command: snip.command.clone(),
-            });
-        }
-    }
-
-    pub fn execute_confirm_delete_snippet(&mut self) {
-        if let Some(m) = self.confirm_delete_snippet_modal.take() {
-            self.delete_snippet_by_id(m.snippet_id);
-        }
-    }
-
-    pub fn save_snippet_from_modal(&mut self) -> bool {
-        let title = self.add_snippet_modal.title.text.trim().to_string();
-        let command = self.add_snippet_modal.command.text.trim().to_string();
-        let category = self.add_snippet_modal.category.text.trim().to_string();
-        let description = self.add_snippet_modal.description.text.trim().to_string();
-
-        if title.is_empty() {
-            self.add_snippet_modal.error_msg = Some("Укажите название сниппета".into());
-            return false;
-        }
-        if command.is_empty() {
-            self.add_snippet_modal.error_msg = Some("Укажите команду".into());
-            return false;
-        }
-
-        let cat_opt = if category.is_empty() { None } else { Some(category.as_str()) };
-        let desc_opt = if description.is_empty() { None } else { Some(description.as_str()) };
-
-        let result = if self.add_snippet_modal.is_editing {
-            if let Some(id) = self.add_snippet_modal.editing_id {
-                self.db.update_snippet(id, &title, &command, cat_opt, desc_opt)
-            } else {
-                self.db.add_snippet(&title, &command, cat_opt, desc_opt).map(|_| ())
-            }
-        } else {
-            self.db.add_snippet(&title, &command, cat_opt, desc_opt).map(|_| ())
-        };
-
-        if result.is_ok() {
-            self.add_snippet_modal.is_open = false;
-            self.refresh_snippets();
-            true
-        } else {
-            self.add_snippet_modal.error_msg = Some("Ошибка при сохранении сниппета".into());
-            false
-        }
-    }
-
-    pub fn delete_snippet_by_id(&mut self, id: i64) {
-        let _ = self.db.delete_snippet(id);
-        self.refresh_snippets();
-    }
 }
 
 #[cfg(test)]
@@ -4412,7 +4275,10 @@ mod tests {
     #[test]
     fn test_percent_encode() {
         assert_eq!(percent_encode("hello world"), "hello+world");
-        assert_eq!(percent_encode("ssh-keygen -t ed25519"), "ssh-keygen+-t+ed25519");
+        assert_eq!(
+            percent_encode("ssh-keygen -t ed25519"),
+            "ssh-keygen+-t+ed25519"
+        );
         let cyrillic_encoded = percent_encode("привет");
         assert!(cyrillic_encoded.contains('%'));
     }
@@ -4426,12 +4292,12 @@ mod tests {
         assert!(!sel.contains(4, 1));
         assert!(sel.contains(5, 1));
         assert!(sel.contains(20, 1)); // rest of first line
-        assert!(sel.contains(0, 2));  // entire middle line
+        assert!(sel.contains(0, 2)); // entire middle line
         assert!(sel.contains(50, 2)); // entire middle line
-        assert!(sel.contains(0, 3));  // start of last line
+        assert!(sel.contains(0, 3)); // start of last line
         assert!(sel.contains(10, 3)); // up to col 10
         assert!(!sel.contains(11, 3)); // beyond col 10 on last line
-        assert!(!sel.contains(5, 4));  // next line
+        assert!(!sel.contains(5, 4)); // next line
     }
 
     #[test]
@@ -4460,7 +4326,7 @@ mod tests {
     #[test]
     fn test_pos_from_coords_calculation() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.sidebar_width = 240.0;
         app.header_height = 42.0;
         app.terminal_cols = 80;
@@ -4509,13 +4375,20 @@ mod tests {
 
         // Test drag selection simulation
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.add_snippet_modal.is_open = true;
-        app.add_snippet_modal.command.set("sudo systemctl status docker");
+        app.add_snippet_modal
+            .command
+            .set("sudo systemctl status docker");
 
         // Click at character index 5 ("systemctl...")
         let input_origin_x = 100.0;
-        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 5.0 * 7.0, input_origin_x, 1);
+        app.handle_input_click(
+            InputFieldId::AddSnippet(1),
+            input_origin_x + 5.0 * 7.0,
+            input_origin_x,
+            1,
+        );
         assert!(app.is_input_selecting);
         assert_eq!(app.add_snippet_modal.command.cursor, 5);
 
@@ -4523,23 +4396,37 @@ mod tests {
         let changed = app.update_input_selection(input_origin_x + 14.0 * 7.0);
         assert!(changed);
         assert_eq!(app.add_snippet_modal.command.cursor, 14);
-        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
+        assert_eq!(
+            app.add_snippet_modal.command.selected_range(),
+            Some((5, 14))
+        );
 
         // End drag selection
         let ended = app.end_input_selection();
         assert!(ended);
         assert!(!app.is_input_selecting);
-        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((5, 14)));
+        assert_eq!(
+            app.add_snippet_modal.command.selected_range(),
+            Some((5, 14))
+        );
 
         // Test triple click selects whole line
-        app.handle_input_click(InputFieldId::AddSnippet(1), input_origin_x + 10.0, input_origin_x, 3);
-        assert_eq!(app.add_snippet_modal.command.selected_range(), Some((0, 28)));
+        app.handle_input_click(
+            InputFieldId::AddSnippet(1),
+            input_origin_x + 10.0,
+            input_origin_x,
+            3,
+        );
+        assert_eq!(
+            app.add_snippet_modal.command.selected_range(),
+            Some((0, 28))
+        );
     }
 
     #[test]
     fn test_modal_snippet_hit_testing_stability() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.add_snippet_modal.is_open = true;
 
         let w = 1120.0;
@@ -4605,7 +4492,7 @@ mod tests {
     #[test]
     fn test_handle_text_navigation_key() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.add_host_modal.is_open = true;
         app.add_host_modal.name.set("prod-server-01");
 
@@ -4634,7 +4521,7 @@ mod tests {
     #[test]
     fn test_header_tabs_hit_testing_stability() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         // Create 2 tabs (index 0 and index 1)
         app.tabs.push(SessionTab {
             id: "tab-01".into(),
@@ -4644,7 +4531,6 @@ mod tests {
             status: "🟢 Connected".into(),
             terminal: Terminal::new(80, 24, 100),
             handle: None,
-            current_input_buffer: String::new(),
             host_id: None,
             host_config: None,
         });
@@ -4656,7 +4542,6 @@ mod tests {
             status: "🟢 Connected".into(),
             terminal: Terminal::new(80, 24, 100),
             handle: None,
-            current_input_buffer: String::new(),
             host_id: None,
             host_config: None,
         });
@@ -4681,7 +4566,7 @@ mod tests {
     #[test]
     fn test_split_banner_hit_testing() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.tabs.push(SessionTab {
             id: "tab-01".into(),
             title: "server-left".into(),
@@ -4690,7 +4575,6 @@ mod tests {
             status: "🟢 Connected".into(),
             terminal: Terminal::new(80, 24, 100),
             handle: None,
-            current_input_buffer: String::new(),
             host_id: None,
             host_config: None,
         });
@@ -4702,7 +4586,6 @@ mod tests {
             status: "🔴 Ошибка: Connection refused".into(),
             terminal: Terminal::new(80, 24, 100),
             handle: None,
-            current_input_buffer: String::new(),
             host_id: None,
             host_config: None,
         });
@@ -4726,7 +4609,7 @@ mod tests {
     #[test]
     fn test_confirm_run_modal_hit_testing() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.open_confirm_run_modal("rm -rf /var/log/*".into(), "Сниппет «Очистить логи»".into());
         assert!(app.confirm_run_modal.is_some());
 
@@ -4758,7 +4641,7 @@ mod tests {
     #[test]
     fn test_settings_about_tab_hit_testing() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut app = AppState::new(rt.handle().clone());
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
         app.open_settings_modal();
         assert!(app.settings_modal.is_some());
         let modal = app.settings_modal.as_ref().unwrap();
@@ -4803,5 +4686,33 @@ mod tests {
         // Hover Import JSON button (modal_x + 38..238, modal_y + 274..304)
         let (_, _) = app.update_hover(modal_x + 100.0, modal_y + 285.0, w, h);
         assert_eq!(app.hover, HoverTarget::SettingsImportJson);
+    }
+
+    #[test]
+    fn test_scrollbar_compressed_height_no_panic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = AppState::new(rt.handle().clone()).unwrap();
+        let mut term = Terminal::new(80, 24, 100);
+        // Fill scrollback buffer so scrollback_len > 0
+        for i in 0..50 {
+            term.write_bytes(format!("line {i}\r\n").as_bytes());
+        }
+        app.tabs.push(SessionTab {
+            id: "tab-test".into(),
+            title: "server".into(),
+            host_address: "127.0.0.1".into(),
+            username: "root".into(),
+            status: "🟢 Connected".into(),
+            terminal: term,
+            handle: None,
+            host_id: None,
+            host_config: None,
+        });
+        app.active_tab = 0;
+
+        // Test with compressed heights where sb_h <= 24.0 (previously caused panic min = 24.0, max = 20.0)
+        for compressed_h in [50.0, 60.0, 70.0, 80.0, 100.0, 150.0] {
+            let (_, _) = app.update_hover(995.0, 45.0, 1000.0, compressed_h);
+        }
     }
 }

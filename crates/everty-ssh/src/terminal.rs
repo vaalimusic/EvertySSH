@@ -32,6 +32,11 @@ pub struct TerminalScreen {
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub cursor_visible: bool,
+    pub bracketed_paste: bool,
+    pending_command: Option<String>,
+    pending_history_id: Option<String>,
+    last_history_id: Option<String>,
+    executed_commands: Vec<String>,
     saved_cursor: (usize, usize),
 
     current_fg: Color,
@@ -62,6 +67,11 @@ impl TerminalScreen {
             cursor_x: 0,
             cursor_y: 0,
             cursor_visible: true,
+            bracketed_paste: false,
+            pending_command: None,
+            pending_history_id: None,
+            last_history_id: None,
+            executed_commands: Vec::new(),
             saved_cursor: (0, 0),
             current_fg: default_fg,
             current_bg: default_bg,
@@ -325,6 +335,52 @@ impl TerminalScreen {
 }
 
 impl Perform for TerminalScreen {
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if self.alt_screen.is_some() || params.first() != Some(&b"633".as_slice()) {
+            return;
+        }
+        match params.get(1).copied() {
+            Some(b"E") => {
+                self.pending_history_id = params
+                    .get(3)
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .filter(|id| id.starts_with("everty-history:") && id.len() <= 128)
+                    .map(str::to_owned);
+                self.pending_command = if self.pending_history_id.is_some()
+                    && self.pending_history_id == self.last_history_id
+                {
+                    None
+                } else {
+                    params.get(2).and_then(|bytes| decode_shell_command(bytes))
+                };
+            }
+            Some(b"C") => {
+                if let Some(command) = self.pending_command.take() {
+                    self.last_history_id = self.pending_history_id.take();
+                    if self.executed_commands.len() < 64 {
+                        self.executed_commands.push(command);
+                    }
+                }
+            }
+            Some(b"A") => {
+                self.pending_command = None;
+                self.pending_history_id = None;
+            }
+            Some(b"P") => {
+                if let Some(id) = params
+                    .get(2)
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(|value| value.strip_prefix("EvertyHistoryId="))
+                {
+                    if id.starts_with("everty-history:") && id.len() <= 128 {
+                        self.last_history_id = Some(id.into());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn print(&mut self, c: char) {
         if self.cursor_x >= self.cols {
             self.cursor_x = 0;
@@ -389,11 +445,13 @@ impl Perform for TerminalScreen {
                     for &val in &p {
                         match val {
                             25 => self.cursor_visible = true,
+                            2004 => self.bracketed_paste = true,
                             1049 | 47 => {
                                 // Enable alternate screen buffer
                                 if self.alt_screen.is_none() {
                                     let alt = vec![vec![Cell::default(); self.cols]; self.rows];
-                                    self.alt_screen = Some(std::mem::replace(&mut self.screen, alt));
+                                    self.alt_screen =
+                                        Some(std::mem::replace(&mut self.screen, alt));
                                 }
                             }
                             _ => {}
@@ -406,6 +464,7 @@ impl Perform for TerminalScreen {
                     for &val in &p {
                         match val {
                             25 => self.cursor_visible = false,
+                            2004 => self.bracketed_paste = false,
                             1049 | 47 => {
                                 // Disable alternate screen buffer
                                 if let Some(primary) = self.alt_screen.take() {
@@ -446,8 +505,12 @@ impl Perform for TerminalScreen {
                                 self.current_fg = Self::color_from_256(p[i + 2]);
                                 i += 2;
                             } else if i + 4 < p.len() && p[i + 1] == 2 {
-                                self.current_fg =
-                                    Color::rgba(p[i + 2] as u8, p[i + 3] as u8, p[i + 4] as u8, 255);
+                                self.current_fg = Color::rgba(
+                                    p[i + 2] as u8,
+                                    p[i + 3] as u8,
+                                    p[i + 4] as u8,
+                                    255,
+                                );
                                 i += 4;
                             }
                         }
@@ -456,8 +519,12 @@ impl Perform for TerminalScreen {
                                 self.current_bg = Self::color_from_256(p[i + 2]);
                                 i += 2;
                             } else if i + 4 < p.len() && p[i + 1] == 2 {
-                                self.current_bg =
-                                    Color::rgba(p[i + 2] as u8, p[i + 3] as u8, p[i + 4] as u8, 255);
+                                self.current_bg = Color::rgba(
+                                    p[i + 2] as u8,
+                                    p[i + 3] as u8,
+                                    p[i + 4] as u8,
+                                    255,
+                                );
                                 i += 4;
                             }
                         }
@@ -584,6 +651,44 @@ impl Perform for TerminalScreen {
     }
 }
 
+fn decode_shell_command(encoded: &[u8]) -> Option<String> {
+    if encoded.len() > 16 * 1024 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut i = 0;
+    while i < encoded.len() {
+        if encoded[i] == b'\\' {
+            match encoded.get(i + 1) {
+                Some(b'\\') => {
+                    bytes.push(b'\\');
+                    i += 2;
+                }
+                Some(b'x') if i + 3 < encoded.len() => {
+                    let hex = std::str::from_utf8(&encoded[i + 2..i + 4]).ok()?;
+                    bytes.push(u8::from_str_radix(hex, 16).ok()?);
+                    i += 4;
+                }
+                _ => return None,
+            }
+        } else {
+            bytes.push(encoded[i]);
+            i += 1;
+        }
+    }
+    let command = String::from_utf8(bytes).ok()?;
+    if command.trim().is_empty()
+        || command.starts_with(' ')
+        || command.len() > 4096
+        || command
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
+    {
+        return None;
+    }
+    Some(command)
+}
+
 pub struct Terminal {
     pub screen: TerminalScreen,
     parser: Parser,
@@ -595,6 +700,10 @@ impl Terminal {
             screen: TerminalScreen::new(cols, rows, max_scrollback),
             parser: Parser::new(),
         }
+    }
+
+    pub fn take_executed_commands(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.screen.executed_commands)
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) {
@@ -657,7 +766,11 @@ impl Terminal {
         for r in r1..=r2 {
             if let Some(row) = self.get_row(r) {
                 let start_col = if r == r1 { c1 } else { 0 };
-                let end_col = if r == r2 { (c2 + 1).min(row.len()) } else { row.len() };
+                let end_col = if r == r2 {
+                    (c2 + 1).min(row.len())
+                } else {
+                    row.len()
+                };
                 if start_col < end_col && start_col < row.len() {
                     let text: String = row[start_col..end_col].iter().map(|c| c.ch).collect();
                     lines.push(text.trim_end().to_string());
@@ -750,6 +863,107 @@ pub struct SearchMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_history_ids_suppress_ignored_commands_without_deduplicating_other_integrations() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"\x1b]633;P;EvertyHistoryId=everty-history:1:10\x07");
+        term.write_bytes(b"\x1b]633;E;old command;everty-history:1:10\x07\x1b]633;C\x07");
+        assert!(term.take_executed_commands().is_empty());
+        for id in ["11", "11", "12"] {
+            term.write_bytes(
+                format!("\x1b]633;E;echo new;everty-history:1:{id}\x07\x1b]633;C\x07").as_bytes(),
+            );
+        }
+        assert_eq!(term.take_executed_commands(), ["echo new", "echo new"]);
+        for _ in 0..2 {
+            term.write_bytes(b"\x1b]633;E;other shell;constant-nonce\x07\x1b]633;C\x07");
+        }
+        assert_eq!(
+            term.take_executed_commands(),
+            ["other shell", "other shell"]
+        );
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn bundled_bash_hook_reports_real_commands_and_respects_ignorespace() {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        #[cfg(windows)]
+        let bash = std::env::var_os("EVERTYSSH_BASH")
+            .unwrap_or_else(|| r"C:\Program Files\Git\bin\bash.exe".into());
+        #[cfg(not(windows))]
+        let bash = std::ffi::OsString::from("bash");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/shell-integration.bash")
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "'\\''");
+        let script = format!("HISTFILE=/dev/null\nHISTCONTROL=ignorespace\nsource '{source}'\nprintf '%s\\n' hello\n echo hidden-secret\nprintf '%s\\n' 'semi;colon'\nprintf '%s\\n' 'Привет'\nexit\n");
+        let mut child = Command::new(bash)
+            .args(["--noprofile", "--norc", "-i"])
+            .env("HISTFILE", "/dev/null")
+            .env("PS1", "")
+            .env("PROMPT_COMMAND", "")
+            .env("LANG", "C.UTF-8")
+            .env("LC_ALL", "C.UTF-8")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(&output.stdout);
+        term.write_bytes(&output.stderr);
+        assert_eq!(
+            term.take_executed_commands(),
+            [
+                "printf '%s\\n' hello",
+                "printf '%s\\n' 'semi;colon'",
+                "printf '%s\\n' 'Привет'",
+                "exit"
+            ]
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_mode_survives_split_packets_and_resets() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"\x1b[?20");
+        assert!(!term.screen.bracketed_paste);
+        term.write_bytes(b"04h");
+        assert!(term.screen.bracketed_paste);
+        term.write_bytes(b"\x1b[?2004l");
+        assert!(!term.screen.bracketed_paste);
+    }
+
+    #[test]
+    fn shell_history_requires_execution_marker_and_decodes_edited_command() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"password typed in sudo\r\n");
+        assert!(term.take_executed_commands().is_empty());
+        term.write_bytes(b"\x1b]633;E;echo \\x3b ");
+        term.write_bytes("привет".as_bytes());
+        term.write_bytes(b"\x07");
+        assert!(term.take_executed_commands().is_empty());
+        term.write_bytes(b"\x1b]633;C\x07");
+        assert_eq!(term.take_executed_commands(), ["echo ; привет"]);
+        term.write_bytes(b"\x1b]633;C\x07");
+        assert!(term.take_executed_commands().is_empty());
+        term.write_bytes(b"\x1b]633;E; secret\x07\x1b]633;C\x07");
+        assert!(term.take_executed_commands().is_empty());
+    }
 
     #[test]
     fn test_terminal_basic_print_and_ansi() {

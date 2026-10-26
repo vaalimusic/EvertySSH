@@ -12,8 +12,12 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   build-windows:
     name: Build Windows Exe
+    needs: checks
     runs-on: windows-latest
 
     steps:
@@ -27,7 +31,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build EvertySSH Release
-        run: cargo build --release --bin everty-ssh
+        run: cargo build --release --locked --bin everty-ssh
 
       - name: Prepare Windows Package
         shell: pwsh
@@ -37,6 +41,7 @@ jobs:
           Copy-Item Logo.png dist/EvertySSH/ -ErrorAction SilentlyContinue
           Copy-Item README.md dist/EvertySSH/ -ErrorAction SilentlyContinue
           Copy-Item LICENSE dist/EvertySSH/ -ErrorAction SilentlyContinue
+          Copy-Item -LiteralPath docs -Destination dist/EvertySSH/docs -Recurse
           Compress-Archive -Path dist/EvertySSH/* -DestinationPath dist/EvertySSH-windows-x64.zip -Force
 
       - name: Upload Artifact (EvertySSH-windows-x64)
@@ -48,10 +53,22 @@ jobs:
             dist/EvertySSH-windows-x64.zip
           retention-days: 14
 
+      - name: Select release notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          if (Test-Path -LiteralPath $notesPath) {
+            "path=$notesPath" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: EvertySSH ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.path }}
           files: |
             dist/EvertySSH/everty-ssh.exe
             dist/EvertySSH-windows-x64.zip
