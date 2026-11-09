@@ -36,42 +36,99 @@ jobs:
       - name: Prepare Windows Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/EvertySSH
-          Copy-Item target/release/everty-ssh.exe dist/EvertySSH/
-          Copy-Item Logo.png dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item README.md dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item LICENSE dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item -LiteralPath docs -Destination dist/EvertySSH/docs -Recurse
-          Compress-Archive -Path dist/EvertySSH/* -DestinationPath dist/EvertySSH-windows-x64.zip -Force
+          New-Item -ItemType Directory -Force -Path release-files
+          Copy-Item target/release/everty-ssh.exe release-files/
+          Copy-Item Logo.png release-files/ -ErrorAction SilentlyContinue
+          Copy-Item README.md release-files/ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE release-files/ -ErrorAction SilentlyContinue
+          Copy-Item docs release-files/ -Recurse -Force
+          Compress-Archive -Path release-files/* -DestinationPath EvertySSH-windows-x64.zip -Force
 
       - name: Upload Artifact (EvertySSH-windows-x64)
         uses: actions/upload-artifact@v4
         with:
           name: EvertySSH-windows-x64
           path: |
-            dist/EvertySSH/everty-ssh.exe
-            dist/EvertySSH-windows-x64.zip
+            release-files/everty-ssh.exe
+            EvertySSH-windows-x64.zip
           retention-days: 14
+
+  build-linux:
+    name: Build Linux Executable
+    needs: checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libx11-dev libwayland-dev fonts-dejavu-core
+
+      - name: Build EvertySSH Release
+        run: cargo build --release --locked --bin everty-ssh
+
+      - name: Prepare Linux Package
+        run: |
+          mkdir -p release-files
+          cp target/release/everty-ssh release-files/
+          cp Logo.png release-files/ || true
+          cp README.md release-files/ || true
+          cp LICENSE release-files/ || true
+          cp -r docs release-files/
+          tar -czvf EvertySSH-linux-x64.tar.gz -C release-files .
+
+      - name: Upload Artifact (EvertySSH-linux-x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EvertySSH-linux-x64
+          path: |
+            release-files/everty-ssh
+            EvertySSH-linux-x64.tar.gz
+          retention-days: 14
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: EvertySSH-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Select release notes
         id: notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+        shell: bash
         run: |
-          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
-          if (Test-Path -LiteralPath $notesPath) {
-            "path=$notesPath" >> $env:GITHUB_OUTPUT
-          }
+          notesPath="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notesPath" ]; then
+            echo "path=$notesPath" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: EvertySSH ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.path }}
           files: |
-            dist/EvertySSH/everty-ssh.exe
-            dist/EvertySSH-windows-x64.zip
+            release-assets/everty-ssh.exe
+            release-assets/EvertySSH-windows-x64.zip
+            release-assets/everty-ssh
+            release-assets/EvertySSH-linux-x64.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true
