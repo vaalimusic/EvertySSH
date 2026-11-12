@@ -36,42 +36,179 @@ jobs:
       - name: Prepare Windows Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/EvertySSH
-          Copy-Item target/release/everty-ssh.exe dist/EvertySSH/
-          Copy-Item Logo.png dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item README.md dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item LICENSE dist/EvertySSH/ -ErrorAction SilentlyContinue
-          Copy-Item -LiteralPath docs -Destination dist/EvertySSH/docs -Recurse
-          Compress-Archive -Path dist/EvertySSH/* -DestinationPath dist/EvertySSH-windows-x64.zip -Force
+          New-Item -ItemType Directory -Force -Path release-files
+          Copy-Item target/release/everty-ssh.exe release-files/
+          Copy-Item Logo.png release-files/ -ErrorAction SilentlyContinue
+          Copy-Item README.md release-files/ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE release-files/ -ErrorAction SilentlyContinue
+          Copy-Item -LiteralPath docs -Destination release-files/docs -Recurse -Force
+          Compress-Archive -Path release-files/* -DestinationPath release-files/EvertySSH-windows-x64.zip -Force
 
       - name: Upload Artifact (EvertySSH-windows-x64)
         uses: actions/upload-artifact@v4
         with:
           name: EvertySSH-windows-x64
           path: |
-            dist/EvertySSH/everty-ssh.exe
-            dist/EvertySSH-windows-x64.zip
+            release-files/everty-ssh.exe
+            release-files/EvertySSH-windows-x64.zip
           retention-days: 14
+
+  build-linux:
+    name: Build Linux Executable and Packages (deb, rpm, tar.gz)
+    needs: checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libx11-dev libwayland-dev fonts-dejavu-core rpm
+
+      - name: Build EvertySSH Release
+        run: cargo build --release --locked --bin everty-ssh
+
+      - name: Prepare Linux Packages (.tar.gz, .deb, .rpm)
+        shell: bash
+        run: |
+          RAW_VER="${GITHUB_REF_NAME#v}"
+          if [ -z "$RAW_VER" ] || [ "$RAW_VER" = "$GITHUB_REF_NAME" ]; then
+            RAW_VER=$(grep -m1 '^version = ' crates/everty-ssh/Cargo.toml | cut -d '"' -f2)
+          fi
+          echo "Packaging Linux releases for version: $RAW_VER"
+
+          mkdir -p release-files
+          cp target/release/everty-ssh release-files/
+
+          # 1. Portable tar.gz bundle
+          BUNDLE_DIR="EvertySSH-linux-x64"
+          mkdir -p "$BUNDLE_DIR"
+          cp target/release/everty-ssh "$BUNDLE_DIR/"
+          cp Logo.png "$BUNDLE_DIR/" 2>/dev/null || true
+          cp README.md "$BUNDLE_DIR/" 2>/dev/null || true
+          cp LICENSE "$BUNDLE_DIR/" 2>/dev/null || true
+          cp -r docs "$BUNDLE_DIR/" 2>/dev/null || true
+          tar -czvf "release-files/EvertySSH-linux-x64.tar.gz" "$BUNDLE_DIR"
+
+          # 2. Debian (.deb) package
+          DEB_ROOT="deb-build"
+          mkdir -p "$DEB_ROOT/DEBIAN"
+          mkdir -p "$DEB_ROOT/usr/bin"
+          mkdir -p "$DEB_ROOT/usr/share/applications"
+          mkdir -p "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
+
+          cp target/release/everty-ssh "$DEB_ROOT/usr/bin/"
+          chmod 755 "$DEB_ROOT/usr/bin/everty-ssh"
+
+          if [ -f assets/linux/everty-ssh.desktop ]; then
+            cp assets/linux/everty-ssh.desktop "$DEB_ROOT/usr/share/applications/"
+          fi
+          if [ -f Logo.png ]; then
+            cp Logo.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/everty-ssh.png"
+          fi
+
+          cat <<EOF > "$DEB_ROOT/DEBIAN/control"
+Package: everty-ssh
+Version: ${RAW_VER}
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Arthur Valiev <info@everty.ru>
+Homepage: https://github.com/vaalimusic/EvertySSH
+Description: Fast, secure and modern desktop SSH client
+ EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.
+EOF
+          chmod 644 "$DEB_ROOT/DEBIAN/control"
+
+          dpkg-deb --build --root-owner-group "$DEB_ROOT" "release-files/everty-ssh_${RAW_VER}_amd64.deb"
+
+          # 3. Red Hat (.rpm) package
+          RPM_TOPDIR="$(pwd)/rpmbuild"
+          mkdir -p "$RPM_TOPDIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cp target/release/everty-ssh "$RPM_TOPDIR/SOURCES/"
+          cp assets/linux/everty-ssh.desktop "$RPM_TOPDIR/SOURCES/"
+          cp Logo.png "$RPM_TOPDIR/SOURCES/everty-ssh.png"
+
+          cat <<EOF > "$RPM_TOPDIR/SPECS/everty-ssh.spec"
+Name:           everty-ssh
+Version:        ${RAW_VER}
+Release:        1%{?dist}
+Summary:        Fast, secure and modern desktop SSH client
+License:        MIT
+URL:            https://github.com/vaalimusic/EvertySSH
+AutoReqProv:    yes
+
+%description
+EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.
+
+%install
+mkdir -p %{buildroot}/usr/bin
+mkdir -p %{buildroot}/usr/share/applications
+mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
+install -m 755 %{_sourcedir}/everty-ssh %{buildroot}/usr/bin/everty-ssh
+install -m 644 %{_sourcedir}/everty-ssh.desktop %{buildroot}/usr/share/applications/everty-ssh.desktop
+install -m 644 %{_sourcedir}/everty-ssh.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/everty-ssh.png
+
+%files
+/usr/bin/everty-ssh
+/usr/share/applications/everty-ssh.desktop
+/usr/share/icons/hicolor/512x512/apps/everty-ssh.png
+EOF
+
+          rpmbuild -bb --define "_topdir $RPM_TOPDIR" "$RPM_TOPDIR/SPECS/everty-ssh.spec"
+          cp "$RPM_TOPDIR"/RPMS/x86_64/*.rpm "release-files/everty-ssh-${RAW_VER}-1.x86_64.rpm"
+
+      - name: Upload Artifact (EvertySSH-linux-x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EvertySSH-linux-x64
+          path: |
+            release-files/everty-ssh
+            release-files/EvertySSH-linux-x64.tar.gz
+            release-files/*.deb
+            release-files/*.rpm
+          retention-days: 14
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: EvertySSH-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Select release notes
         id: notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+        shell: bash
         run: |
-          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
-          if (Test-Path -LiteralPath $notesPath) {
-            "path=$notesPath" >> $env:GITHUB_OUTPUT
-          }
+          notesPath="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notesPath" ]; then
+            echo "path=$notesPath" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: EvertySSH ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.path }}
-          files: |
-            dist/EvertySSH/everty-ssh.exe
-            dist/EvertySSH-windows-x64.zip
+          files: release-assets/*
           draft: false
           prerelease: false
           generate_release_notes: true

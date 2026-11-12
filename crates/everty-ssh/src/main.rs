@@ -23,6 +23,7 @@ pub mod secrets;
 pub mod ssh;
 pub mod terminal;
 pub mod ui;
+pub mod updater;
 
 use app::{
     open_browser_url, open_google_search, AppState, AuthModeChoice, ContextMenuItem, HoverTarget,
@@ -42,6 +43,7 @@ struct EvertySshApp {
     click_count: usize,
     last_render_size: (u32, u32),
     current_cursor: CursorIcon,
+    last_update_status: updater::UpdateStatus,
 }
 
 impl EvertySshApp {
@@ -61,6 +63,7 @@ impl EvertySshApp {
             click_count: 0,
             last_render_size: (0, 0),
             current_cursor: CursorIcon::Default,
+            last_update_status: updater::UpdateStatus::Idle,
         })
     }
 
@@ -518,6 +521,20 @@ impl EvertySshApp {
             HoverTarget::SettingsAboutLinkGithub => {
                 open_browser_url("https://github.com/vaalimusic/EvertySSH");
             }
+            HoverTarget::SettingsCheckUpdate => {
+                self.state.trigger_update_check();
+                self.request_redraw();
+            }
+            HoverTarget::SettingsDownloadUpdate => {
+                let url = if let updater::UpdateStatus::Available { release_url, .. } =
+                    &*self.state.update_status.read()
+                {
+                    release_url.clone()
+                } else {
+                    "https://github.com/vaalimusic/EvertySSH/releases/latest".into()
+                };
+                open_browser_url(&url);
+            }
             HoverTarget::SettingsSecurityField(idx) => {
                 if let Some(m) = &mut self.state.settings_modal {
                     m.active_security_field = idx;
@@ -971,6 +988,16 @@ impl ApplicationHandler for EvertySshApp {
                 let logical_h = new_size.height as f64 / scale_factor;
                 self.state.resize_terminals(logical_w, logical_h);
                 self.resize_surface(new_size.width, new_size.height);
+                self.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(w) = &self.window {
+                    let size = w.inner_size();
+                    let logical_w = size.width as f64 / scale_factor;
+                    let logical_h = size.height as f64 / scale_factor;
+                    self.state.resize_terminals(logical_w, logical_h);
+                    self.resize_surface(size.width, size.height);
+                }
                 self.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -1936,41 +1963,176 @@ impl ApplicationHandler for EvertySshApp {
                     }
                 }
 
-                // Regular key text input
-                if let Some(txt) = text {
-                    self.state.handle_key_input(txt.as_str());
-                    self.request_redraw();
-                } else {
-                    match &logical_key {
-                        Key::Named(NamedKey::Enter) => {
-                            self.state.handle_key_input("\r");
+                let app_cursor = self.state.active_terminal_app_cursor_keys();
+                let ctrl = self.modifiers.control_key();
+
+                match &logical_key {
+                    Key::Named(NamedKey::Enter) => {
+                        self.state.handle_key_input("\r");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        self.state
+                            .handle_key_input(if ctrl { "\x17" } else { "\x08" });
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Tab) => {
+                        self.state.handle_key_input("\t");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        self.state.send_to_active_terminal("\x1b");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5A"
+                        } else if app_cursor {
+                            "\x1bOA"
+                        } else {
+                            "\x1b[A"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5B"
+                        } else if app_cursor {
+                            "\x1bOB"
+                        } else {
+                            "\x1b[B"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5C"
+                        } else if app_cursor {
+                            "\x1bOC"
+                        } else {
+                            "\x1b[C"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5D"
+                        } else if app_cursor {
+                            "\x1bOD"
+                        } else {
+                            "\x1b[D"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5H"
+                        } else if app_cursor {
+                            "\x1bOH"
+                        } else {
+                            "\x1b[H"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::End) => {
+                        let seq = if ctrl {
+                            "\x1b[1;5F"
+                        } else if app_cursor {
+                            "\x1bOF"
+                        } else {
+                            "\x1b[F"
+                        };
+                        self.state.send_to_active_terminal(seq);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        self.state.send_to_active_terminal("\x1b[5~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::PageDown) => {
+                        self.state.send_to_active_terminal("\x1b[6~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Insert) => {
+                        self.state.send_to_active_terminal("\x1b[2~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        self.state.send_to_active_terminal("\x1b[3~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F1) => {
+                        self.state.send_to_active_terminal("\x1bOP");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F2) => {
+                        self.state.send_to_active_terminal("\x1bOQ");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F3) => {
+                        self.state.send_to_active_terminal("\x1bOR");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F4) => {
+                        self.state.send_to_active_terminal("\x1bOS");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F5) => {
+                        self.state.send_to_active_terminal("\x1b[15~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F6) => {
+                        self.state.send_to_active_terminal("\x1b[17~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F7) => {
+                        self.state.send_to_active_terminal("\x1b[18~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F8) => {
+                        self.state.send_to_active_terminal("\x1b[19~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F9) => {
+                        self.state.send_to_active_terminal("\x1b[20~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F10) => {
+                        self.state.send_to_active_terminal("\x1b[21~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F11) => {
+                        self.state.send_to_active_terminal("\x1b[23~");
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::F12) => {
+                        self.state.send_to_active_terminal("\x1b[24~");
+                        self.request_redraw();
+                    }
+                    _ => {
+                        if let Some(txt) = text {
+                            self.state.handle_key_input(txt.as_str());
                             self.request_redraw();
+                        } else if ctrl {
+                            if let Key::Character(c) = &logical_key {
+                                let lower = c.to_ascii_lowercase();
+                                if lower.len() == 1 {
+                                    let ch = lower.chars().next().unwrap();
+                                    if ch.is_ascii_lowercase() {
+                                        let ctrl_char = (ch as u8 - b'a' + 1) as char;
+                                        let mut s = String::new();
+                                        s.push(ctrl_char);
+                                        self.state.send_to_active_terminal(&s);
+                                        self.request_redraw();
+                                    }
+                                }
+                            }
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.state.handle_key_input("\x08");
-                            self.request_redraw();
-                        }
-                        Key::Named(NamedKey::Tab) => {
-                            self.state.handle_key_input("\t");
-                            self.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            self.state.send_to_active_terminal("\x1b[A");
-                            self.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowDown) => {
-                            self.state.send_to_active_terminal("\x1b[B");
-                            self.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowRight) => {
-                            self.state.send_to_active_terminal("\x1b[C");
-                            self.request_redraw();
-                        }
-                        Key::Named(NamedKey::ArrowLeft) => {
-                            self.state.send_to_active_terminal("\x1b[D");
-                            self.request_redraw();
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -1981,7 +2143,8 @@ impl ApplicationHandler for EvertySshApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let mut need_redraw = false;
 
-        if self.state.poll_events() {
+        let events_polled = self.state.poll_events();
+        if events_polled {
             need_redraw = true;
         }
 
@@ -2006,12 +2169,25 @@ impl ApplicationHandler for EvertySshApp {
             }
         }
 
+        if self.state.settings_modal.is_some() {
+            let cur_status = self.state.update_status.read().clone();
+            if cur_status != self.last_update_status {
+                self.last_update_status = cur_status;
+                need_redraw = true;
+            }
+        }
+
         if need_redraw {
             self.request_redraw();
         }
 
-        // Set efficient wait duration instead of busy-poll!
-        event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(30)));
+        if events_polled || self.state.has_pending_events() {
+            // If we processed events or there are still more in the queue, poll immediately
+            event_loop.set_control_flow(ControlFlow::Poll);
+        } else {
+            // Set responsive wait duration for caret blink / tooltip
+            event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(16)));
+        }
     }
 }
 

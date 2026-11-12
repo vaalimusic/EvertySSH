@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=EvertySSH
+GenericName=SSH Client & Terminal Emulator
+Comment=Fast, secure and modern desktop SSH client with split terminal and credentials vault
+Exec=everty-ssh %u
+Icon=everty-ssh
+Terminal=false
+Type=Application
+Categories=Utility;TerminalEmulator;Network;
+Keywords=ssh;terminal;remote;server;console;
+StartupWMClass=everty-ssh

@@ -19,6 +19,7 @@ impl AppState {
     }
 
     pub fn open_settings_modal(&mut self) {
+        self.trigger_update_check();
         let has_existing = self.hosts_doc.settings.master_password_hash.is_some();
         self.settings_modal = Some(SettingsModal {
             is_open: true,

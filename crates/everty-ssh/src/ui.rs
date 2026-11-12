@@ -5010,6 +5010,171 @@ impl UiRenderer {
                             );
                         }
 
+                        // 4.5 Update Card
+                        let upd_y = modal_y + 372.0;
+                        let upd_rect =
+                            LogicalRect::from_xywh(modal_x + 24.0, upd_y, modal_w - 48.0, 44.0);
+                        let upd_status = app.update_status.read().clone();
+                        let is_avail =
+                            matches!(&upd_status, crate::updater::UpdateStatus::Available { .. });
+
+                        let upd_bg = match &upd_status {
+                            crate::updater::UpdateStatus::Available { .. } => {
+                                Color::rgba(16, 185, 129, 20)
+                            }
+                            crate::updater::UpdateStatus::Error(_) => Color::rgba(239, 68, 68, 15),
+                            _ => Color::rgba(18, 28, 52, 220),
+                        };
+                        let upd_border = match &upd_status {
+                            crate::updater::UpdateStatus::Available { .. } => accent_mint,
+                            crate::updater::UpdateStatus::Error(_) => Color::rgba(239, 68, 68, 80),
+                            _ => card_border,
+                        };
+                        builder.fill_rect(upd_rect, upd_bg, 8.0);
+                        builder.stroke_rect(upd_rect, upd_border, 1.0, 8.0);
+
+                        // Icon on left
+                        builder.icon(
+                            ICON_REFRESH_ID,
+                            LogicalRect::from_xywh(modal_x + 36.0, upd_y + 14.0, 16.0, 16.0),
+                            if is_avail { accent_mint } else { text_dim },
+                        );
+
+                        // Status text
+                        let avail_msg_ru;
+                        let avail_msg_en;
+                        let (main_txt, sub_txt) = match &upd_status {
+                            crate::updater::UpdateStatus::Idle => (
+                                tr(lang, "Проверка обновлений", "Check for updates"),
+                                tr(
+                                    lang,
+                                    "Узнайте о наличии новых версий на GitHub",
+                                    "Check for newer releases on GitHub",
+                                ),
+                            ),
+                            crate::updater::UpdateStatus::Checking => (
+                                tr(lang, "Проверка обновлений...", "Checking for updates..."),
+                                tr(
+                                    lang,
+                                    "Подключение к GitHub Releases...",
+                                    "Querying GitHub Releases API...",
+                                ),
+                            ),
+                            crate::updater::UpdateStatus::UpToDate { .. } => (
+                                tr(lang, "У вас последняя версия", "EvertySSH is up to date"),
+                                tr(
+                                    lang,
+                                    "Обновлений не требуется",
+                                    "You have the latest version installed",
+                                ),
+                            ),
+                            crate::updater::UpdateStatus::Available { latest_version, .. } => {
+                                avail_msg_ru =
+                                    format!("Доступна новая версия: {}!", latest_version);
+                                avail_msg_en =
+                                    format!("New version available: {}!", latest_version);
+                                (
+                                    tr(lang, &avail_msg_ru, &avail_msg_en),
+                                    tr(
+                                        lang,
+                                        "Нажмите кнопку справа для перехода к релизу",
+                                        "Click the button on the right to download",
+                                    ),
+                                )
+                            }
+                            crate::updater::UpdateStatus::Error(_) => (
+                                tr(
+                                    lang,
+                                    "Не удалось проверить обновления",
+                                    "Could not check updates",
+                                ),
+                                tr(
+                                    lang,
+                                    "Проверьте интернет-соединение",
+                                    "Check network connection or try later",
+                                ),
+                            ),
+                        };
+
+                        let m_l = self.shape_cached(main_txt, StyleId::SansBold, None);
+                        builder.text(
+                            LogicalPoint::new(modal_x + 60.0, upd_y + 7.0),
+                            m_l,
+                            if is_avail { accent_mint } else { text_main },
+                        );
+
+                        let s_l = self.shape_cached(sub_txt, StyleId::Small, None);
+                        builder.text(
+                            LogicalPoint::new(modal_x + 60.0, upd_y + 24.0),
+                            s_l,
+                            text_dim,
+                        );
+
+                        // Button on right
+                        let btn_target = if is_avail {
+                            HoverTarget::SettingsDownloadUpdate
+                        } else {
+                            HoverTarget::SettingsCheckUpdate
+                        };
+                        let is_btn_h = app.hover == btn_target;
+                        let btn_w = if is_avail { 170.0 } else { 150.0 };
+                        let btn_rect = LogicalRect::from_xywh(
+                            modal_x + modal_w - 24.0 - btn_w - 8.0,
+                            upd_y + 7.0,
+                            btn_w,
+                            30.0,
+                        );
+
+                        let btn_bg = if is_avail {
+                            if is_btn_h {
+                                Color::rgba(45, 212, 191, 50)
+                            } else {
+                                Color::rgba(45, 212, 191, 30)
+                            }
+                        } else if is_btn_h {
+                            Color::rgba(30, 48, 80, 240)
+                        } else {
+                            Color::rgba(18, 29, 52, 200)
+                        };
+                        let btn_stroke = if is_avail {
+                            accent_mint
+                        } else if is_btn_h {
+                            accent_mint
+                        } else {
+                            card_border
+                        };
+                        builder.fill_rect(btn_rect, btn_bg, 5.0);
+                        builder.stroke_rect(btn_rect, btn_stroke, 1.0, 5.0);
+
+                        let btn_label_txt = match &upd_status {
+                            crate::updater::UpdateStatus::Checking => {
+                                tr(lang, "Проверка...", "Checking...")
+                            }
+                            crate::updater::UpdateStatus::Available { .. } => {
+                                tr(lang, "Скачать обновление ↗", "Download update ↗")
+                            }
+                            crate::updater::UpdateStatus::UpToDate { .. } => {
+                                tr(lang, "Проверить снова", "Check again")
+                            }
+                            crate::updater::UpdateStatus::Error(_) => {
+                                tr(lang, "Повторить", "Retry")
+                            }
+                            crate::updater::UpdateStatus::Idle => tr(lang, "Проверить", "Check"),
+                        };
+                        let b_l = self.shape_cached(btn_label_txt, StyleId::Small, None);
+                        builder.text(
+                            LogicalPoint::new(
+                                btn_rect.origin.x.0 + 12.0,
+                                btn_rect.origin.y.0 + 7.5,
+                            ),
+                            b_l,
+                            if is_avail || is_btn_h {
+                                accent_mint
+                            } else {
+                                text_main
+                            },
+                        );
+
                         // 5. Bottom Copyright & License
                         let copy_txt = "© 2026 Arthur Valiev • Everty Ecosystem • Open Source under MIT License";
                         let copy_l = self.shape_cached(copy_txt, StyleId::Small, None);

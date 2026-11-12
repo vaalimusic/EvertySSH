@@ -1065,6 +1065,8 @@ pub enum HoverTarget {
     SettingsAboutLinkEmail,
     SettingsAboutLinkTelegram,
     SettingsAboutLinkGithub,
+    SettingsCheckUpdate,
+    SettingsDownloadUpdate,
     SettingsSavePassword,
     SettingsRemovePassword,
     SettingsExportJson,
@@ -1232,6 +1234,7 @@ pub struct AppState {
     pub confirm_run_modal: Option<ConfirmRunCommandModal>,
     pub host_key_modal: Option<HostKeyPromptModal>,
     pub settings_modal: Option<SettingsModal>,
+    pub update_status: crate::updater::SharedUpdateStatus,
     pub input_context_menu: Option<InputContextMenu>,
     pub tooltip: Option<TooltipState>,
 
@@ -1303,7 +1306,7 @@ impl AppState {
         let snippets = db.list_snippets().unwrap_or_default();
         let initial_cmds = db.list_recent_commands(50).unwrap_or_default();
 
-        Ok(Self {
+        let app = Self {
             hosts_doc,
             config_store,
             pending_host_keys: VecDeque::new(),
@@ -1337,6 +1340,9 @@ impl AppState {
             confirm_run_modal: None,
             host_key_modal: None,
             settings_modal: None,
+            update_status: std::sync::Arc::new(parking_lot::RwLock::new(
+                crate::updater::UpdateStatus::Idle,
+            )),
             input_context_menu: None,
             tooltip: None,
             is_app_locked,
@@ -1366,7 +1372,28 @@ impl AppState {
             event_tx,
             event_rx,
             tokio_handle,
-        })
+        };
+        app.trigger_update_check();
+        Ok(app)
+    }
+
+    pub fn trigger_update_check(&self) {
+        let status = self.update_status.clone();
+        let cur_ver = env!("CARGO_PKG_VERSION");
+        {
+            let mut w = status.write();
+            if *w == crate::updater::UpdateStatus::Checking {
+                return;
+            }
+            *w = crate::updater::UpdateStatus::Checking;
+        }
+        self.tokio_handle.spawn(async move {
+            let res =
+                tokio::task::spawn_blocking(move || crate::updater::check_github_release(cur_ver))
+                    .await
+                    .unwrap_or_else(|e| crate::updater::UpdateStatus::Error(e.to_string()));
+            *status.write() = res;
+        });
     }
 
     pub fn resize_terminals(&mut self, logical_w: f64, logical_h: f64) {
@@ -1662,6 +1689,25 @@ impl AppState {
                                     } else if x >= c2_x && x <= c2_x + c_w {
                                         new_hover = HoverTarget::SettingsAboutLinkGithub;
                                         cursor = CursorIcon::Pointer;
+                                    }
+                                } else {
+                                    let upd_y = modal_y + 372.0;
+                                    let upd_h = 44.0;
+                                    if y >= upd_y && y <= upd_y + upd_h {
+                                        let is_avail = matches!(
+                                            &*self.update_status.read(),
+                                            crate::updater::UpdateStatus::Available { .. }
+                                        );
+                                        let btn_w = if is_avail { 170.0 } else { 150.0 };
+                                        let btn_x = modal_x + modal_w - 24.0 - btn_w - 8.0;
+                                        if x >= btn_x && x <= btn_x + btn_w {
+                                            new_hover = if is_avail {
+                                                HoverTarget::SettingsDownloadUpdate
+                                            } else {
+                                                HoverTarget::SettingsCheckUpdate
+                                            };
+                                            cursor = CursorIcon::Pointer;
+                                        }
                                     }
                                 }
                             }
@@ -3126,6 +3172,16 @@ impl AppState {
         }
     }
 
+    pub fn has_pending_events(&self) -> bool {
+        !self.event_rx.is_empty()
+    }
+
+    pub fn active_terminal_app_cursor_keys(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map_or(false, |t| t.terminal.application_cursor_keys())
+    }
+
     pub fn poll_events(&mut self) -> bool {
         let mut updated = false;
         let mut history_changed = false;
@@ -3960,6 +4016,16 @@ impl AppState {
                 lang,
                 "Репозиторий EvertySSH на GitHub",
                 "EvertySSH GitHub repository",
+            )),
+            HoverTarget::SettingsCheckUpdate => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Проверить наличие обновлений на GitHub",
+                "Check for updates on GitHub",
+            )),
+            HoverTarget::SettingsDownloadUpdate => std::borrow::Cow::Borrowed(tr(
+                lang,
+                "Открыть страницу релиза для скачивания обновления",
+                "Open release page to download update",
             )),
             HoverTarget::SettingsSavePassword => std::borrow::Cow::Borrowed(tr(
                 lang,

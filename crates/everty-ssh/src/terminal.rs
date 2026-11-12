@@ -33,6 +33,8 @@ pub struct TerminalScreen {
     pub cursor_y: usize,
     pub cursor_visible: bool,
     pub bracketed_paste: bool,
+    pub application_cursor_keys: bool,
+    pub wrap_next: bool,
     pending_command: Option<String>,
     pending_history_id: Option<String>,
     last_history_id: Option<String>,
@@ -68,6 +70,8 @@ impl TerminalScreen {
             cursor_y: 0,
             cursor_visible: true,
             bracketed_paste: false,
+            application_cursor_keys: false,
+            wrap_next: false,
             pending_command: None,
             pending_history_id: None,
             last_history_id: None,
@@ -218,6 +222,7 @@ impl TerminalScreen {
             }
         }
 
+        self.wrap_next = false;
         if self.cursor_x >= cols {
             self.cursor_x = cols.saturating_sub(1);
         }
@@ -272,10 +277,12 @@ impl TerminalScreen {
             self.cursor_y += 1;
         } else if !self.screen.is_empty() {
             let top_row = self.screen.remove(0);
-            if self.scrollback.len() >= self.max_scrollback {
-                self.scrollback.pop_front();
+            if self.alt_screen.is_none() {
+                if self.scrollback.len() >= self.max_scrollback {
+                    self.scrollback.pop_front();
+                }
+                self.scrollback.push_back(top_row);
             }
-            self.scrollback.push_back(top_row);
             self.screen.push(vec![
                 Cell {
                     ch: ' ',
@@ -382,9 +389,10 @@ impl Perform for TerminalScreen {
     }
 
     fn print(&mut self, c: char) {
-        if self.cursor_x >= self.cols {
+        if self.wrap_next {
             self.cursor_x = 0;
             self.linefeed();
+            self.wrap_next = false;
         }
 
         let x = self.cursor_x;
@@ -400,13 +408,18 @@ impl Perform for TerminalScreen {
                         bold: self.bold,
                         underline: self.underline,
                     };
-                    self.cursor_x += 1;
+                    if self.cursor_x + 1 >= self.cols {
+                        self.wrap_next = true;
+                    } else {
+                        self.cursor_x += 1;
+                    }
                 }
             }
         }
     }
 
     fn execute(&mut self, byte: u8) {
+        self.wrap_next = false;
         match byte {
             b'\n' | 0x0C => {
                 self.linefeed();
@@ -444,6 +457,7 @@ impl Perform for TerminalScreen {
                     // DEC Private Mode Set
                     for &val in &p {
                         match val {
+                            1 => self.application_cursor_keys = true,
                             25 => self.cursor_visible = true,
                             2004 => self.bracketed_paste = true,
                             1049 | 47 => {
@@ -463,10 +477,12 @@ impl Perform for TerminalScreen {
                     // DEC Private Mode Reset
                     for &val in &p {
                         match val {
+                            1 => self.application_cursor_keys = false,
                             25 => self.cursor_visible = false,
                             2004 => self.bracketed_paste = false,
                             1049 | 47 => {
                                 // Disable alternate screen buffer
+                                self.application_cursor_keys = false;
                                 if let Some(primary) = self.alt_screen.take() {
                                     self.screen = primary;
                                 }
@@ -534,28 +550,46 @@ impl Perform for TerminalScreen {
                 }
             }
             'A' => {
+                self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 self.cursor_y = self.cursor_y.saturating_sub(n);
             }
             'B' => {
+                self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 self.cursor_y = (self.cursor_y + n).min(self.rows.saturating_sub(1));
             }
             'C' => {
+                self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 self.cursor_x = (self.cursor_x + n).min(self.cols.saturating_sub(1));
             }
             'D' => {
+                self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 self.cursor_x = self.cursor_x.saturating_sub(n);
             }
+            'G' => {
+                // CHA: Cursor Horizontal Absolute
+                self.wrap_next = false;
+                let col = p.first().copied().unwrap_or(1).max(1) as usize - 1;
+                self.cursor_x = col.min(self.cols.saturating_sub(1));
+            }
+            'd' => {
+                // VPA: Vertical Position Absolute
+                self.wrap_next = false;
+                let row = p.first().copied().unwrap_or(1).max(1) as usize - 1;
+                self.cursor_y = row.min(self.rows.saturating_sub(1));
+            }
             'H' | 'f' => {
+                self.wrap_next = false;
                 let r = p.first().copied().unwrap_or(1).max(1) as usize - 1;
                 let c = p.get(1).copied().unwrap_or(1).max(1) as usize - 1;
                 self.cursor_y = r.min(self.rows.saturating_sub(1));
                 self.cursor_x = c.min(self.cols.saturating_sub(1));
             }
             'J' => {
+                self.wrap_next = false;
                 let mode = p.first().copied().unwrap_or(0);
                 match mode {
                     0 => {
@@ -611,6 +645,7 @@ impl Perform for TerminalScreen {
                 }
             }
             'K' => {
+                self.wrap_next = false;
                 let mode = p.first().copied().unwrap_or(0);
                 let cur_y = self.cursor_y;
                 let cur_x = self.cursor_x;
@@ -639,12 +674,119 @@ impl Perform for TerminalScreen {
                     }
                 }
             }
+            'X' => {
+                // ECH: Erase Character
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let cur_y = self.cursor_y;
+                let cur_x = self.cursor_x;
+                if cur_y < self.screen.len() {
+                    let end = (cur_x + n).min(self.cols);
+                    for x in cur_x..end {
+                        if x < self.screen[cur_y].len() {
+                            self.screen[cur_y][x] = Cell::default();
+                        }
+                    }
+                }
+            }
+            'P' => {
+                // DCH: Delete Character
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let cur_y = self.cursor_y;
+                let cur_x = self.cursor_x;
+                if cur_y < self.screen.len() && cur_x < self.cols {
+                    let row = &mut self.screen[cur_y];
+                    let n = n.min(self.cols.saturating_sub(cur_x));
+                    for x in cur_x..(self.cols - n) {
+                        row[x] = row[x + n];
+                    }
+                    for x in (self.cols - n)..self.cols {
+                        row[x] = Cell::default();
+                    }
+                }
+            }
+            '@' => {
+                // ICH: Insert Character
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let cur_y = self.cursor_y;
+                let cur_x = self.cursor_x;
+                if cur_y < self.screen.len() && cur_x < self.cols {
+                    let row = &mut self.screen[cur_y];
+                    let n = n.min(self.cols.saturating_sub(cur_x));
+                    for x in (cur_x + n..self.cols).rev() {
+                        row[x] = row[x - n];
+                    }
+                    for x in cur_x..(cur_x + n) {
+                        row[x] = Cell::default();
+                    }
+                }
+            }
+            'M' => {
+                // DL: Delete Line
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let cur_y = self.cursor_y;
+                if cur_y < self.rows {
+                    let n = n.min(self.rows - cur_y);
+                    for _ in 0..n {
+                        if cur_y < self.screen.len() {
+                            self.screen.remove(cur_y);
+                            self.screen.push(vec![Cell::default(); self.cols]);
+                        }
+                    }
+                }
+            }
+            'L' => {
+                // IL: Insert Line
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let cur_y = self.cursor_y;
+                if cur_y < self.rows {
+                    let n = n.min(self.rows - cur_y);
+                    for _ in 0..n {
+                        self.screen.insert(cur_y, vec![Cell::default(); self.cols]);
+                        if self.screen.len() > self.rows {
+                            self.screen.pop();
+                        }
+                    }
+                }
+            }
             's' => {
                 self.saved_cursor = (self.cursor_x, self.cursor_y);
             }
             'u' => {
+                self.wrap_next = false;
                 self.cursor_x = self.saved_cursor.0.min(self.cols.saturating_sub(1));
                 self.cursor_y = self.saved_cursor.1.min(self.rows.saturating_sub(1));
+            }
+            _ => {}
+        }
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        self.wrap_next = false;
+        match byte {
+            b'7' => {
+                // DECSC: Save Cursor
+                self.saved_cursor = (self.cursor_x, self.cursor_y);
+            }
+            b'8' => {
+                // DECRC: Restore Cursor
+                self.cursor_x = self.saved_cursor.0.min(self.cols.saturating_sub(1));
+                self.cursor_y = self.saved_cursor.1.min(self.rows.saturating_sub(1));
+            }
+            b'M' => {
+                // RI: Reverse Index
+                if self.cursor_y > 0 {
+                    self.cursor_y -= 1;
+                } else {
+                    self.screen.insert(0, vec![Cell::default(); self.cols]);
+                    if self.screen.len() > self.rows {
+                        self.screen.pop();
+                    }
+                }
             }
             _ => {}
         }
@@ -740,6 +882,10 @@ impl Terminal {
 
     pub fn cursor_pos(&self) -> (usize, usize) {
         (self.screen.cursor_x, self.screen.cursor_y)
+    }
+
+    pub fn application_cursor_keys(&self) -> bool {
+        self.screen.application_cursor_keys
     }
 
     pub fn scrollback_len(&self) -> usize {
@@ -1062,5 +1208,86 @@ mod tests {
         assert_eq!(new_cy, 7);
         let bottom_row: String = term.get_row(7).unwrap().iter().map(|c| c.ch).collect();
         assert!(bottom_row.starts_with("user@host:~$ "));
+    }
+
+    #[test]
+    fn test_terminal_cha_and_ech_readline_history_replacement() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"user@host:~$ docker-compose up -d");
+        let (cx, cy) = term.cursor_pos();
+        assert_eq!(cy, 0);
+        assert_eq!(cx, 33);
+
+        // Readline history cycling: moves to col 14 (CHA), writes "ls", erases 20 remaining chars (ECH)
+        term.write_bytes(b"\x1b[14Gls\x1b[20X");
+        let row0: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        assert_eq!(row0[..16].to_string(), "user@host:~$ ls ");
+        // Ensure trailing characters of docker-compose up -d were erased
+        assert_eq!(row0[16..33].trim(), "");
+    }
+
+    #[test]
+    fn test_terminal_dch_and_ich() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"hello world");
+        // Move to column 7 ("w") and delete 5 characters (DCH)
+        term.write_bytes(b"\x1b[7G\x1b[5P");
+        let row: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        assert_eq!(row[..6].to_string(), "hello ");
+
+        // Insert 5 characters (ICH)
+        term.write_bytes(b"\x1b[7G\x1b[5@there");
+        let row2: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        assert_eq!(row2[..11].to_string(), "hello there");
+    }
+
+    #[test]
+    fn test_terminal_decsc_decrc_and_ri() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"line 1\r\nline 2\r\nline 3");
+        assert_eq!(term.cursor_pos(), (6, 2));
+
+        // Save cursor (DECSC \x1b7)
+        term.write_bytes(b"\x1b7");
+        term.write_bytes(b"\x1b[1;1H");
+        assert_eq!(term.cursor_pos(), (0, 0));
+
+        // Restore cursor (DECRC \x1b8)
+        term.write_bytes(b"\x1b8");
+        assert_eq!(term.cursor_pos(), (6, 2));
+
+        // Reverse Index (RI \x1bM) moves cursor up
+        term.write_bytes(b"\x1bM");
+        assert_eq!(term.cursor_pos(), (6, 1));
+    }
+
+    #[test]
+    fn test_terminal_application_cursor_keys_mode() {
+        let mut term = Terminal::new(80, 24, 100);
+        assert!(!term.application_cursor_keys());
+
+        // Enable DECCKM (\x1b[?1h)
+        term.write_bytes(b"\x1b[?1h");
+        assert!(term.application_cursor_keys());
+
+        // Disable DECCKM (\x1b[?1l)
+        term.write_bytes(b"\x1b[?1l");
+        assert!(!term.application_cursor_keys());
+    }
+
+    #[test]
+    fn test_terminal_autowrap_glitch() {
+        let mut term = Terminal::new(10, 5, 100);
+        // Write exactly 10 characters (filling row 0)
+        term.write_bytes(b"0123456789");
+        assert_eq!(term.cursor_pos().1, 0);
+
+        // Immediate CRLF should not produce an extra blank row
+        term.write_bytes(b"\r\nNEXT");
+        assert_eq!(term.cursor_pos().1, 1);
+        let row0: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        let row1: String = term.get_row(1).unwrap().iter().map(|c| c.ch).collect();
+        assert_eq!(row0, "0123456789");
+        assert_eq!(row1[..4].to_string(), "NEXT");
     }
 }
