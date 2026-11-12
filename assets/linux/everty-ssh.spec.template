@@ -1,0 +1,23 @@
+Name:           everty-ssh
+Version:        @@VERSION@@
+Release:        1%{?dist}
+Summary:        Fast, secure and modern desktop SSH client
+License:        MIT
+URL:            https://github.com/vaalimusic/EvertySSH
+AutoReqProv:    yes
+
+%description
+EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.
+
+%install
+mkdir -p %{buildroot}/usr/bin
+mkdir -p %{buildroot}/usr/share/applications
+mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
+install -m 755 %{_sourcedir}/everty-ssh %{buildroot}/usr/bin/everty-ssh
+install -m 644 %{_sourcedir}/everty-ssh.desktop %{buildroot}/usr/share/applications/everty-ssh.desktop
+install -m 644 %{_sourcedir}/everty-ssh.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/everty-ssh.png
+
+%files
+/usr/bin/everty-ssh
+/usr/share/applications/everty-ssh.desktop
+/usr/share/icons/hicolor/512x512/apps/everty-ssh.png

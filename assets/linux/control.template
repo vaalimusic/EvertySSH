@@ -1,0 +1,9 @@
+Package: everty-ssh
+Version: @@VERSION@@
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Arthur Valiev <info@everty.ru>
+Homepage: https://github.com/vaalimusic/EvertySSH
+Description: Fast, secure and modern desktop SSH client
+ EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.

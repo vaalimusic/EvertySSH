@@ -115,17 +115,7 @@ jobs:
             cp Logo.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/everty-ssh.png"
           fi
 
-          cat <<EOF > "$DEB_ROOT/DEBIAN/control"
-Package: everty-ssh
-Version: ${RAW_VER}
-Section: utils
-Priority: optional
-Architecture: amd64
-Maintainer: Arthur Valiev <info@everty.ru>
-Homepage: https://github.com/vaalimusic/EvertySSH
-Description: Fast, secure and modern desktop SSH client
- EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.
-EOF
+          sed "s/@@VERSION@@/${RAW_VER}/g" assets/linux/control.template > "$DEB_ROOT/DEBIAN/control"
           chmod 644 "$DEB_ROOT/DEBIAN/control"
 
           dpkg-deb --build --root-owner-group "$DEB_ROOT" "release-files/everty-ssh_${RAW_VER}_amd64.deb"
@@ -137,31 +127,7 @@ EOF
           cp assets/linux/everty-ssh.desktop "$RPM_TOPDIR/SOURCES/"
           cp Logo.png "$RPM_TOPDIR/SOURCES/everty-ssh.png"
 
-          cat <<EOF > "$RPM_TOPDIR/SPECS/everty-ssh.spec"
-Name:           everty-ssh
-Version:        ${RAW_VER}
-Release:        1%{?dist}
-Summary:        Fast, secure and modern desktop SSH client
-License:        MIT
-URL:            https://github.com/vaalimusic/EvertySSH
-AutoReqProv:    yes
-
-%description
-EvertySSH is a fast, secure and modern desktop SSH client with split terminal and credentials vault.
-
-%install
-mkdir -p %{buildroot}/usr/bin
-mkdir -p %{buildroot}/usr/share/applications
-mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
-install -m 755 %{_sourcedir}/everty-ssh %{buildroot}/usr/bin/everty-ssh
-install -m 644 %{_sourcedir}/everty-ssh.desktop %{buildroot}/usr/share/applications/everty-ssh.desktop
-install -m 644 %{_sourcedir}/everty-ssh.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/everty-ssh.png
-
-%files
-/usr/bin/everty-ssh
-/usr/share/applications/everty-ssh.desktop
-/usr/share/icons/hicolor/512x512/apps/everty-ssh.png
-EOF
+          sed "s/@@VERSION@@/${RAW_VER}/g" assets/linux/everty-ssh.spec.template > "$RPM_TOPDIR/SPECS/everty-ssh.spec"
 
           rpmbuild -bb --define "_topdir $RPM_TOPDIR" "$RPM_TOPDIR/SPECS/everty-ssh.spec"
           cp "$RPM_TOPDIR"/RPMS/x86_64/*.rpm "release-files/everty-ssh-${RAW_VER}-1.x86_64.rpm"
