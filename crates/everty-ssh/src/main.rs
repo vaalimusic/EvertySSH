@@ -1247,10 +1247,35 @@ impl ApplicationHandler for EvertySshApp {
                 }
 
                 if let Some(tab) = self.state.tabs.get_mut(self.state.active_tab) {
-                    if lines > 0 {
-                        tab.terminal.scroll_up(lines.unsigned_abs() as usize * 3);
-                    } else if lines < 0 {
-                        tab.terminal.scroll_down(lines.unsigned_abs() as usize * 3);
+                    if tab.terminal.is_alt_screen() {
+                        let app_cursor = tab.terminal.application_cursor_keys();
+                        let seq = if lines > 0 {
+                            if app_cursor {
+                                "\x1bOA"
+                            } else {
+                                "\x1b[A"
+                            }
+                        } else {
+                            if app_cursor {
+                                "\x1bOB"
+                            } else {
+                                "\x1b[B"
+                            }
+                        };
+                        let count = lines.unsigned_abs() as usize;
+                        for _ in 0..count {
+                            if let Some(handle) = &tab.handle {
+                                if *handle.is_connected.read() {
+                                    let _ = handle.input_tx.try_send(seq.as_bytes().to_vec());
+                                }
+                            }
+                        }
+                    } else {
+                        if lines > 0 {
+                            tab.terminal.scroll_up(lines.unsigned_abs() as usize * 3);
+                        } else if lines < 0 {
+                            tab.terminal.scroll_down(lines.unsigned_abs() as usize * 3);
+                        }
                     }
                     self.request_redraw();
                 }
@@ -1964,7 +1989,49 @@ impl ApplicationHandler for EvertySshApp {
                 }
 
                 let app_cursor = self.state.active_terminal_app_cursor_keys();
+                let shift = self.modifiers.shift_key();
                 let ctrl = self.modifiers.control_key();
+                let alt = self.modifiers.alt_key();
+                let mod_code = 1
+                    + (if shift { 1 } else { 0 })
+                    + (if alt { 2 } else { 0 })
+                    + (if ctrl { 4 } else { 0 });
+
+                let f_key_seq = |f_num: u8| -> String {
+                    if mod_code == 1 {
+                        match f_num {
+                            1 => "\x1bOP".into(),
+                            2 => "\x1bOQ".into(),
+                            3 => "\x1bOR".into(),
+                            4 => "\x1bOS".into(),
+                            5 => "\x1b[15~".into(),
+                            6 => "\x1b[17~".into(),
+                            7 => "\x1b[18~".into(),
+                            8 => "\x1b[19~".into(),
+                            9 => "\x1b[20~".into(),
+                            10 => "\x1b[21~".into(),
+                            11 => "\x1b[23~".into(),
+                            12 => "\x1b[24~".into(),
+                            _ => String::new(),
+                        }
+                    } else {
+                        match f_num {
+                            1 => format!("\x1b[1;{mod_code}P"),
+                            2 => format!("\x1b[1;{mod_code}Q"),
+                            3 => format!("\x1b[1;{mod_code}R"),
+                            4 => format!("\x1b[1;{mod_code}S"),
+                            5 => format!("\x1b[15;{mod_code}~"),
+                            6 => format!("\x1b[17;{mod_code}~"),
+                            7 => format!("\x1b[18;{mod_code}~"),
+                            8 => format!("\x1b[19;{mod_code}~"),
+                            9 => format!("\x1b[20;{mod_code}~"),
+                            10 => format!("\x1b[21;{mod_code}~"),
+                            11 => format!("\x1b[23;{mod_code}~"),
+                            12 => format!("\x1b[24;{mod_code}~"),
+                            _ => String::new(),
+                        }
+                    }
+                };
 
                 match &logical_key {
                     Key::Named(NamedKey::Enter) => {
@@ -1977,7 +2044,11 @@ impl ApplicationHandler for EvertySshApp {
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Tab) => {
-                        self.state.handle_key_input("\t");
+                        if shift {
+                            self.state.send_to_active_terminal("\x1b[Z");
+                        } else {
+                            self.state.handle_key_input("\t");
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Escape) => {
@@ -1985,133 +2056,153 @@ impl ApplicationHandler for EvertySshApp {
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5A"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}A")
                         } else if app_cursor {
-                            "\x1bOA"
+                            "\x1bOA".into()
                         } else {
-                            "\x1b[A"
+                            "\x1b[A".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5B"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}B")
                         } else if app_cursor {
-                            "\x1bOB"
+                            "\x1bOB".into()
                         } else {
-                            "\x1b[B"
+                            "\x1b[B".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5C"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}C")
                         } else if app_cursor {
-                            "\x1bOC"
+                            "\x1bOC".into()
                         } else {
-                            "\x1b[C"
+                            "\x1b[C".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5D"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}D")
                         } else if app_cursor {
-                            "\x1bOD"
+                            "\x1bOD".into()
                         } else {
-                            "\x1b[D"
+                            "\x1b[D".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Home) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5H"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}H")
                         } else if app_cursor {
-                            "\x1bOH"
+                            "\x1bOH".into()
                         } else {
-                            "\x1b[H"
+                            "\x1b[H".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::End) => {
-                        let seq = if ctrl {
-                            "\x1b[1;5F"
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[1;{mod_code}F")
                         } else if app_cursor {
-                            "\x1bOF"
+                            "\x1bOF".into()
                         } else {
-                            "\x1b[F"
+                            "\x1b[F".into()
                         };
-                        self.state.send_to_active_terminal(seq);
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::PageUp) => {
-                        self.state.send_to_active_terminal("\x1b[5~");
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[5;{mod_code}~")
+                        } else {
+                            "\x1b[5~".into()
+                        };
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::PageDown) => {
-                        self.state.send_to_active_terminal("\x1b[6~");
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[6;{mod_code}~")
+                        } else {
+                            "\x1b[6~".into()
+                        };
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Insert) => {
-                        self.state.send_to_active_terminal("\x1b[2~");
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[2;{mod_code}~")
+                        } else {
+                            "\x1b[2~".into()
+                        };
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Delete) => {
-                        self.state.send_to_active_terminal("\x1b[3~");
+                        let seq = if mod_code > 1 {
+                            format!("\x1b[3;{mod_code}~")
+                        } else {
+                            "\x1b[3~".into()
+                        };
+                        self.state.send_to_active_terminal(&seq);
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F1) => {
-                        self.state.send_to_active_terminal("\x1bOP");
+                        self.state.send_to_active_terminal(&f_key_seq(1));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F2) => {
-                        self.state.send_to_active_terminal("\x1bOQ");
+                        self.state.send_to_active_terminal(&f_key_seq(2));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F3) => {
-                        self.state.send_to_active_terminal("\x1bOR");
+                        self.state.send_to_active_terminal(&f_key_seq(3));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F4) => {
-                        self.state.send_to_active_terminal("\x1bOS");
+                        self.state.send_to_active_terminal(&f_key_seq(4));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F5) => {
-                        self.state.send_to_active_terminal("\x1b[15~");
+                        self.state.send_to_active_terminal(&f_key_seq(5));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F6) => {
-                        self.state.send_to_active_terminal("\x1b[17~");
+                        self.state.send_to_active_terminal(&f_key_seq(6));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F7) => {
-                        self.state.send_to_active_terminal("\x1b[18~");
+                        self.state.send_to_active_terminal(&f_key_seq(7));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F8) => {
-                        self.state.send_to_active_terminal("\x1b[19~");
+                        self.state.send_to_active_terminal(&f_key_seq(8));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F9) => {
-                        self.state.send_to_active_terminal("\x1b[20~");
+                        self.state.send_to_active_terminal(&f_key_seq(9));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F10) => {
-                        self.state.send_to_active_terminal("\x1b[21~");
+                        self.state.send_to_active_terminal(&f_key_seq(10));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F11) => {
-                        self.state.send_to_active_terminal("\x1b[23~");
+                        self.state.send_to_active_terminal(&f_key_seq(11));
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::F12) => {
-                        self.state.send_to_active_terminal("\x1b[24~");
+                        self.state.send_to_active_terminal(&f_key_seq(12));
                         self.request_redraw();
                     }
                     _ => {

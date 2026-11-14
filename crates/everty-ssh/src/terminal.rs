@@ -49,7 +49,17 @@ pub struct TerminalScreen {
     underline: bool,
 
     screen: Vec<Vec<Cell>>,
-    alt_screen: Option<Vec<Vec<Cell>>>,
+    pub is_alt_screen: bool,
+    primary_screen: Vec<Vec<Cell>>,
+    alt_screen: Vec<Vec<Cell>>,
+    primary_cursor: (usize, usize),
+    primary_saved_cursor: (usize, usize),
+    alt_cursor: (usize, usize),
+    alt_saved_cursor: (usize, usize),
+    pub scroll_top: usize,
+    pub scroll_bottom: usize,
+    pub pending_responses: Vec<Vec<u8>>,
+
     scrollback: VecDeque<Vec<Cell>>,
     max_scrollback: usize,
     pub scroll_offset: usize, // 0 = at bottom (active screen)
@@ -61,7 +71,9 @@ impl TerminalScreen {
         let rows = rows.max(1);
         let default_fg = DEFAULT_TERM_FG;
         let default_bg = DEFAULT_TERM_BG;
-        let screen = vec![vec![Cell::default(); cols]; rows];
+        let primary_screen = vec![vec![Cell::default(); cols]; rows];
+        let alt_screen = vec![vec![Cell::default(); cols]; rows];
+        let screen = primary_screen.clone();
 
         Self {
             cols,
@@ -84,10 +96,78 @@ impl TerminalScreen {
             bold: false,
             underline: false,
             screen,
-            alt_screen: None,
+            is_alt_screen: false,
+            primary_screen,
+            alt_screen,
+            primary_cursor: (0, 0),
+            primary_saved_cursor: (0, 0),
+            alt_cursor: (0, 0),
+            alt_saved_cursor: (0, 0),
+            scroll_top: 0,
+            scroll_bottom: rows.saturating_sub(1),
+            pending_responses: Vec::new(),
             scrollback: VecDeque::with_capacity(max_scrollback),
             max_scrollback,
             scroll_offset: 0,
+        }
+    }
+
+    pub fn enter_alt_screen(&mut self, clear: bool) {
+        if !self.is_alt_screen {
+            self.primary_screen = std::mem::replace(&mut self.screen, self.alt_screen.clone());
+            self.primary_cursor = (self.cursor_x, self.cursor_y);
+            self.primary_saved_cursor = (self.cursor_x, self.cursor_y);
+            self.saved_cursor = (self.cursor_x, self.cursor_y);
+            self.is_alt_screen = true;
+            if clear {
+                for row in &mut self.screen {
+                    for cell in row.iter_mut() {
+                        *cell = Cell::default();
+                    }
+                }
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+                self.saved_cursor = (0, 0);
+            } else {
+                self.cursor_x = self.alt_cursor.0.min(self.cols.saturating_sub(1));
+                self.cursor_y = self.alt_cursor.1.min(self.rows.saturating_sub(1));
+                self.saved_cursor = self.alt_saved_cursor;
+            }
+            self.scroll_top = 0;
+            self.scroll_bottom = self.rows.saturating_sub(1);
+            self.wrap_next = false;
+        } else if clear {
+            for row in &mut self.screen {
+                for cell in row.iter_mut() {
+                    *cell = Cell::default();
+                }
+            }
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            self.saved_cursor = (0, 0);
+            self.wrap_next = false;
+        }
+    }
+
+    pub fn exit_alt_screen(&mut self, restore_cursor: bool) {
+        if self.is_alt_screen {
+            self.alt_screen = std::mem::replace(&mut self.screen, self.primary_screen.clone());
+            self.alt_cursor = (self.cursor_x, self.cursor_y);
+            self.alt_saved_cursor = self.saved_cursor;
+            self.is_alt_screen = false;
+            if restore_cursor {
+                self.cursor_x = self.primary_saved_cursor.0.min(self.cols.saturating_sub(1));
+                self.cursor_y = self.primary_saved_cursor.1.min(self.rows.saturating_sub(1));
+                self.saved_cursor = self.primary_saved_cursor;
+            } else {
+                self.cursor_x = self.primary_cursor.0.min(self.cols.saturating_sub(1));
+                self.cursor_y = self.primary_cursor.1.min(self.rows.saturating_sub(1));
+                self.saved_cursor = self.primary_saved_cursor;
+            }
+            self.scroll_top = 0;
+            self.scroll_bottom = self.rows.saturating_sub(1);
+            self.wrap_next = false;
+            self.application_cursor_keys = false;
         }
     }
 
@@ -95,12 +175,13 @@ impl TerminalScreen {
         if cols == 0 || rows == 0 {
             return;
         }
-        let _old_cols = self.cols;
         let old_rows = self.rows;
         self.cols = cols;
         self.rows = rows;
+        self.scroll_top = 0;
+        self.scroll_bottom = rows.saturating_sub(1);
 
-        // Resize column width for all rows in primary screen
+        // Resize column width for all rows in active screen
         for row in &mut self.screen {
             row.resize(
                 cols,
@@ -128,7 +209,7 @@ impl TerminalScreen {
             );
         }
 
-        if self.alt_screen.is_none() {
+        if !self.is_alt_screen {
             if rows < old_rows {
                 // Height decreased (window compressed vertically).
                 // Ensure active output and prompt at the bottom stay in view by shifting
@@ -174,7 +255,7 @@ impl TerminalScreen {
             }
         }
 
-        // Ensure primary screen has exactly `rows` rows
+        // Ensure active screen has exactly `rows` rows
         while self.screen.len() < rows {
             self.screen.push(vec![
                 Cell {
@@ -191,35 +272,38 @@ impl TerminalScreen {
             self.screen.truncate(rows);
         }
 
-        // Handle alternate screen buffer if active (e.g. htop, nano, mc)
-        if let Some(ref mut alt) = self.alt_screen {
-            for row in alt.iter_mut() {
-                row.resize(
-                    cols,
-                    Cell {
-                        ch: ' ',
-                        fg: self.default_fg,
-                        bg: self.default_bg,
-                        bold: false,
-                        underline: false,
-                    },
-                );
-            }
-            while alt.len() < rows {
-                alt.push(vec![
-                    Cell {
-                        ch: ' ',
-                        fg: self.default_fg,
-                        bg: self.default_bg,
-                        bold: false,
-                        underline: false,
-                    };
-                    cols
-                ]);
-            }
-            if alt.len() > rows {
-                alt.truncate(rows);
-            }
+        // Resize the inactive screen buffer
+        let inactive = if self.is_alt_screen {
+            &mut self.primary_screen
+        } else {
+            &mut self.alt_screen
+        };
+        for row in inactive.iter_mut() {
+            row.resize(
+                cols,
+                Cell {
+                    ch: ' ',
+                    fg: self.default_fg,
+                    bg: self.default_bg,
+                    bold: false,
+                    underline: false,
+                },
+            );
+        }
+        while inactive.len() < rows {
+            inactive.push(vec![
+                Cell {
+                    ch: ' ',
+                    fg: self.default_fg,
+                    bg: self.default_bg,
+                    bold: false,
+                    underline: false,
+                };
+                cols
+            ]);
+        }
+        if inactive.len() > rows {
+            inactive.truncate(rows);
         }
 
         self.wrap_next = false;
@@ -233,11 +317,17 @@ impl TerminalScreen {
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
+        if self.is_alt_screen {
+            return;
+        }
         let max = self.scrollback.len();
         self.scroll_offset = (self.scroll_offset + lines).min(max);
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
+        if self.is_alt_screen {
+            return;
+        }
         if self.scroll_offset >= lines {
             self.scroll_offset -= lines;
         } else {
@@ -254,7 +344,7 @@ impl TerminalScreen {
             return None;
         }
 
-        if self.scroll_offset == 0 {
+        if self.is_alt_screen || self.scroll_offset == 0 {
             self.screen.get(visual_y).map(|r| r.as_slice())
         } else {
             let total_scrollback = self.scrollback.len();
@@ -273,26 +363,34 @@ impl TerminalScreen {
     }
 
     fn linefeed(&mut self) {
-        if self.cursor_y + 1 < self.rows {
-            self.cursor_y += 1;
-        } else if !self.screen.is_empty() {
-            let top_row = self.screen.remove(0);
-            if self.alt_screen.is_none() {
-                if self.scrollback.len() >= self.max_scrollback {
-                    self.scrollback.pop_front();
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom;
+
+        if self.cursor_y == bottom {
+            if top < bottom && bottom < self.screen.len() {
+                let scrolled_row = self.screen.remove(top);
+                if !self.is_alt_screen && top == 0 && bottom == self.rows.saturating_sub(1) {
+                    if self.scrollback.len() >= self.max_scrollback {
+                        self.scrollback.pop_front();
+                    }
+                    self.scrollback.push_back(scrolled_row);
                 }
-                self.scrollback.push_back(top_row);
+                self.screen.insert(
+                    bottom,
+                    vec![
+                        Cell {
+                            ch: ' ',
+                            fg: self.default_fg,
+                            bg: self.default_bg,
+                            bold: false,
+                            underline: false,
+                        };
+                        self.cols
+                    ],
+                );
             }
-            self.screen.push(vec![
-                Cell {
-                    ch: ' ',
-                    fg: self.default_fg,
-                    bg: self.default_bg,
-                    bold: false,
-                    underline: false,
-                };
-                self.cols
-            ]);
+        } else if self.cursor_y + 1 < self.rows {
+            self.cursor_y += 1;
         }
     }
 
@@ -343,7 +441,7 @@ impl TerminalScreen {
 
 impl Perform for TerminalScreen {
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        if self.alt_screen.is_some() || params.first() != Some(&b"633".as_slice()) {
+        if self.is_alt_screen || params.first() != Some(&b"633".as_slice()) {
             return;
         }
         match params.get(1).copied() {
@@ -460,14 +558,9 @@ impl Perform for TerminalScreen {
                             1 => self.application_cursor_keys = true,
                             25 => self.cursor_visible = true,
                             2004 => self.bracketed_paste = true,
-                            1049 | 47 => {
-                                // Enable alternate screen buffer
-                                if self.alt_screen.is_none() {
-                                    let alt = vec![vec![Cell::default(); self.cols]; self.rows];
-                                    self.alt_screen =
-                                        Some(std::mem::replace(&mut self.screen, alt));
-                                }
-                            }
+                            47 | 1047 => self.enter_alt_screen(false),
+                            1048 => self.saved_cursor = (self.cursor_x, self.cursor_y),
+                            1049 => self.enter_alt_screen(true),
                             _ => {}
                         }
                     }
@@ -480,13 +573,14 @@ impl Perform for TerminalScreen {
                             1 => self.application_cursor_keys = false,
                             25 => self.cursor_visible = false,
                             2004 => self.bracketed_paste = false,
-                            1049 | 47 => {
-                                // Disable alternate screen buffer
-                                self.application_cursor_keys = false;
-                                if let Some(primary) = self.alt_screen.take() {
-                                    self.screen = primary;
-                                }
+                            47 | 1047 => self.exit_alt_screen(false),
+                            1048 => {
+                                self.cursor_x =
+                                    self.saved_cursor.0.min(self.cols.saturating_sub(1));
+                                self.cursor_y =
+                                    self.saved_cursor.1.min(self.rows.saturating_sub(1));
                             }
+                            1049 => self.exit_alt_screen(true),
                             _ => {}
                         }
                     }
@@ -632,14 +726,16 @@ impl Perform for TerminalScreen {
                             }
                         }
                     }
-                    2 | 3 => {
+                    2 => {
                         for row in &mut self.screen {
                             for cell in row.iter_mut() {
                                 *cell = Cell::default();
                             }
                         }
-                        self.cursor_x = 0;
-                        self.cursor_y = 0;
+                    }
+                    3 => {
+                        self.scrollback.clear();
+                        self.scroll_offset = 0;
                     }
                     _ => {}
                 }
@@ -728,13 +824,25 @@ impl Perform for TerminalScreen {
                 self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 let cur_y = self.cursor_y;
-                if cur_y < self.rows {
-                    let n = n.min(self.rows - cur_y);
+                let top = self.scroll_top;
+                let bottom = self.scroll_bottom;
+                if cur_y >= top && cur_y <= bottom && bottom < self.screen.len() {
+                    let n = n.min(bottom - cur_y + 1);
                     for _ in 0..n {
-                        if cur_y < self.screen.len() {
-                            self.screen.remove(cur_y);
-                            self.screen.push(vec![Cell::default(); self.cols]);
-                        }
+                        self.screen.remove(cur_y);
+                        self.screen.insert(
+                            bottom,
+                            vec![
+                                Cell {
+                                    ch: ' ',
+                                    fg: self.default_fg,
+                                    bg: self.default_bg,
+                                    bold: false,
+                                    underline: false,
+                                };
+                                self.cols
+                            ],
+                        );
                     }
                 }
             }
@@ -743,14 +851,122 @@ impl Perform for TerminalScreen {
                 self.wrap_next = false;
                 let n = p.first().copied().unwrap_or(1).max(1) as usize;
                 let cur_y = self.cursor_y;
-                if cur_y < self.rows {
-                    let n = n.min(self.rows - cur_y);
+                let top = self.scroll_top;
+                let bottom = self.scroll_bottom;
+                if cur_y >= top && cur_y <= bottom && bottom < self.screen.len() {
+                    let n = n.min(bottom - cur_y + 1);
                     for _ in 0..n {
-                        self.screen.insert(cur_y, vec![Cell::default(); self.cols]);
-                        if self.screen.len() > self.rows {
-                            self.screen.pop();
-                        }
+                        self.screen.remove(bottom);
+                        self.screen.insert(
+                            cur_y,
+                            vec![
+                                Cell {
+                                    ch: ' ',
+                                    fg: self.default_fg,
+                                    bg: self.default_bg,
+                                    bold: false,
+                                    underline: false,
+                                };
+                                self.cols
+                            ],
+                        );
                     }
+                }
+            }
+            'S' => {
+                // SU: Scroll Up
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let top = self.scroll_top;
+                let bottom = self.scroll_bottom;
+                if top < bottom && bottom < self.screen.len() {
+                    let n = n.min(bottom - top + 1);
+                    for _ in 0..n {
+                        let row = self.screen.remove(top);
+                        if !self.is_alt_screen && top == 0 && bottom == self.rows.saturating_sub(1)
+                        {
+                            if self.scrollback.len() >= self.max_scrollback {
+                                self.scrollback.pop_front();
+                            }
+                            self.scrollback.push_back(row);
+                        }
+                        self.screen.insert(
+                            bottom,
+                            vec![
+                                Cell {
+                                    ch: ' ',
+                                    fg: self.default_fg,
+                                    bg: self.default_bg,
+                                    bold: false,
+                                    underline: false,
+                                };
+                                self.cols
+                            ],
+                        );
+                    }
+                }
+            }
+            'T' => {
+                // SD: Scroll Down
+                self.wrap_next = false;
+                let n = p.first().copied().unwrap_or(1).max(1) as usize;
+                let top = self.scroll_top;
+                let bottom = self.scroll_bottom;
+                if top < bottom && bottom < self.screen.len() {
+                    let n = n.min(bottom - top + 1);
+                    for _ in 0..n {
+                        self.screen.remove(bottom);
+                        self.screen.insert(
+                            top,
+                            vec![
+                                Cell {
+                                    ch: ' ',
+                                    fg: self.default_fg,
+                                    bg: self.default_bg,
+                                    bold: false,
+                                    underline: false,
+                                };
+                                self.cols
+                            ],
+                        );
+                    }
+                }
+            }
+            'r' => {
+                // DECSTBM: Set Top and Bottom Margins
+                self.wrap_next = false;
+                let top = p.first().copied().unwrap_or(1).max(1) as usize - 1;
+                let bot = p.get(1).copied().unwrap_or(self.rows as u16).max(1) as usize - 1;
+                if top < bot && bot < self.rows {
+                    self.scroll_top = top;
+                    self.scroll_bottom = bot;
+                } else {
+                    self.scroll_top = 0;
+                    self.scroll_bottom = self.rows.saturating_sub(1);
+                }
+                self.cursor_x = 0;
+                self.cursor_y = self.scroll_top;
+            }
+            'n' => {
+                // DSR: Device Status Report
+                let mode = p.first().copied().unwrap_or(0);
+                match mode {
+                    5 => {
+                        self.pending_responses.push(b"\x1b[0n".to_vec());
+                    }
+                    6 => {
+                        let r = (self.cursor_y + 1).min(self.rows);
+                        let c = (self.cursor_x + 1).min(self.cols);
+                        let resp = format!("\x1b[{r};{c}R");
+                        self.pending_responses.push(resp.into_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            'c' => {
+                // DA: Device Attributes
+                if !is_private {
+                    self.pending_responses.push(b"\x1b[?6c".to_vec());
                 }
             }
             's' => {
@@ -779,14 +995,44 @@ impl Perform for TerminalScreen {
             }
             b'M' => {
                 // RI: Reverse Index
-                if self.cursor_y > 0 {
-                    self.cursor_y -= 1;
-                } else {
-                    self.screen.insert(0, vec![Cell::default(); self.cols]);
-                    if self.screen.len() > self.rows {
-                        self.screen.pop();
+                let top = self.scroll_top;
+                let bottom = self.scroll_bottom;
+                if self.cursor_y == top {
+                    if top < bottom && bottom < self.screen.len() {
+                        self.screen.remove(bottom);
+                        self.screen.insert(
+                            top,
+                            vec![
+                                Cell {
+                                    ch: ' ',
+                                    fg: self.default_fg,
+                                    bg: self.default_bg,
+                                    bold: false,
+                                    underline: false,
+                                };
+                                self.cols
+                            ],
+                        );
                     }
+                } else if self.cursor_y > 0 {
+                    self.cursor_y -= 1;
                 }
+            }
+            b'c' => {
+                // RIS: Reset to Initial State
+                self.screen = vec![vec![Cell::default(); self.cols]; self.rows];
+                self.primary_screen = self.screen.clone();
+                self.alt_screen = self.screen.clone();
+                self.is_alt_screen = false;
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+                self.saved_cursor = (0, 0);
+                self.scroll_top = 0;
+                self.scroll_bottom = self.rows.saturating_sub(1);
+                self.wrap_next = false;
+                self.application_cursor_keys = false;
+                self.scrollback.clear();
+                self.scroll_offset = 0;
             }
             _ => {}
         }
@@ -886,6 +1132,14 @@ impl Terminal {
 
     pub fn application_cursor_keys(&self) -> bool {
         self.screen.application_cursor_keys
+    }
+
+    pub fn is_alt_screen(&self) -> bool {
+        self.screen.is_alt_screen
+    }
+
+    pub fn take_pending_responses(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.screen.pending_responses)
     }
 
     pub fn scrollback_len(&self) -> usize {
@@ -1289,5 +1543,95 @@ mod tests {
         let row1: String = term.get_row(1).unwrap().iter().map(|c| c.ch).collect();
         assert_eq!(row0, "0123456789");
         assert_eq!(row1[..4].to_string(), "NEXT");
+    }
+
+    #[test]
+    fn test_terminal_alt_screen_preserves_primary_and_restores_cursor() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"user@host:~$ echo hello");
+        assert_eq!(term.cursor_pos(), (23, 0));
+
+        // Switch to alternate screen via 1049h (btop / mc start)
+        term.write_bytes(b"\x1b[?1049h");
+        assert!(term.is_alt_screen());
+        assert_eq!(term.cursor_pos(), (0, 0));
+
+        // In alt screen, write btop/editor UI
+        term.write_bytes(b"BTOP DASHBOARD UI");
+        let alt_row0: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        assert!(alt_row0.starts_with("BTOP DASHBOARD UI"));
+
+        // Exit alt screen via 1049l
+        term.write_bytes(b"\x1b[?1049l");
+        assert!(!term.is_alt_screen());
+
+        // Primary screen is restored with original text and cursor
+        let primary_row0: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        assert!(primary_row0.starts_with("user@host:~$ echo hello"));
+        assert_eq!(term.cursor_pos(), (23, 0));
+    }
+
+    #[test]
+    fn test_terminal_decstbm_scrolling_region() {
+        let mut term = Terminal::new(80, 10, 100);
+        for i in 0..10 {
+            if i > 0 {
+                term.write_bytes(b"\r\n");
+            }
+            term.write_bytes(format!("Row {i}").as_bytes());
+        }
+
+        // Set scroll region rows 3 to 6 (1-based: top=3, bottom=6)
+        term.write_bytes(b"\x1b[3;6r");
+        assert_eq!(term.screen.scroll_top, 2);
+        assert_eq!(term.screen.scroll_bottom, 5);
+
+        // Move to bottom of region (row 6, 1-based)
+        term.write_bytes(b"\x1b[6;1H");
+        // Linefeed inside region
+        term.write_bytes(b"\r\nNew Inside Region");
+
+        // Row 0 and Row 1 (above region) must be unchanged
+        let r0: String = term.get_row(0).unwrap().iter().map(|c| c.ch).collect();
+        let r1: String = term.get_row(1).unwrap().iter().map(|c| c.ch).collect();
+        assert!(r0.starts_with("Row 0"));
+        assert!(r1.starts_with("Row 1"));
+
+        // Rows 7, 8, 9 (below region) must be unchanged
+        let r7: String = term.get_row(7).unwrap().iter().map(|c| c.ch).collect();
+        let r8: String = term.get_row(8).unwrap().iter().map(|c| c.ch).collect();
+        let r9: String = term.get_row(9).unwrap().iter().map(|c| c.ch).collect();
+        assert!(r7.starts_with("Row 7"));
+        assert!(r8.starts_with("Row 8"));
+        assert!(r9.starts_with("Row 9"));
+
+        // Region scrolled: row 2 was removed, bottom of region now has "New Inside Region"
+        let r5: String = term.get_row(5).unwrap().iter().map(|c| c.ch).collect();
+        assert!(r5.starts_with("New Inside Region"));
+    }
+
+    #[test]
+    fn test_terminal_ed2_preserves_cursor() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"\x1b[5;10HHello");
+        assert_eq!(term.cursor_pos(), (14, 4));
+
+        // ED 2 clears screen without resetting cursor
+        term.write_bytes(b"\x1b[2J");
+        assert_eq!(term.cursor_pos(), (14, 4));
+        let r4: String = term.get_row(4).unwrap().iter().map(|c| c.ch).collect();
+        assert_eq!(r4.trim(), "");
+    }
+
+    #[test]
+    fn test_terminal_dsr_cpr() {
+        let mut term = Terminal::new(80, 24, 100);
+        term.write_bytes(b"\x1b[8;16H");
+        assert_eq!(term.cursor_pos(), (15, 7));
+
+        term.write_bytes(b"\x1b[6n");
+        let resps = term.take_pending_responses();
+        assert_eq!(resps.len(), 1);
+        assert_eq!(resps[0], b"\x1b[8;16R");
     }
 }

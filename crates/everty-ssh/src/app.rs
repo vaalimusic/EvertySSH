@@ -3199,6 +3199,14 @@ impl AppState {
                 AppEvent::SshOutput { session_id, data } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == session_id) {
                         tab.terminal.write_bytes(&data);
+                        let responses = tab.terminal.take_pending_responses();
+                        if !responses.is_empty() {
+                            if let Some(handle) = &tab.handle {
+                                for resp in responses {
+                                    let _ = handle.input_tx.try_send(resp);
+                                }
+                            }
+                        }
                         let commands = tab.terminal.take_executed_commands();
                         if self.hosts_doc.settings.record_command_history {
                             for command in commands {
